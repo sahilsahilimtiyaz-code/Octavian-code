@@ -259,6 +259,7 @@ fi
 # 内，否则失败；收进清单后重新过滤基线并补复制。循环到无悬空或超限。
 # 回填的每条路径都打进日志：清单之外的增量必须可审计。
 backfill_round=0
+prev_dangling_list=""
 while true; do
   backfill_round=$((backfill_round + 1))
   if ((backfill_round > 10)); then
@@ -266,10 +267,23 @@ while true; do
     exit 1
   fi
   : > "$CHAINED"
+  dangling_list="$(find "$DEST" -xtype l | LC_ALL=C sort)"
+  if [[ -z "$dangling_list" ]]; then
+    break
+  fi
+  # 同一批次连续两轮毫无进展：直接把名单打印出来再失败，
+  # 而不是靠轮次计数猜（此前“每轮恒定 N 条”除了日志别无信息）。
+  if [[ "$dangling_list" == "$prev_dangling_list" ]]; then
+    echo "悬空链接回填停滞：以下链接连续两轮未收敛（各 targets 缺失或被反复过滤）:" >&2
+    printf '%s\n' "$dangling_list" | head -n 20 | sed "s:^$DEST/::" >&2
+    exit 1
+  fi
+  prev_dangling_list="$dangling_list"
   while IFS= read -r link; do
+    [[ -n "$link" ]] || continue
     rel="${link#"$DEST"/}"
     # runner 同位路径上复用 3b 的整链展开（作用域/成环/目录终点/存在性同样
-    # fail-closed）：只取“最终镜像里 druntime 缺的那几跳”，而不是只取终点——
+    # fail-closed）：只取最终镜像里欠缺的那几跳，而不是只取终点——
     # 终点直抄会跳过中间链接，下一轮原地踏步（此前“每轮恒定 N 条”的根因）。
     if ! hops="$(resolve_link_chain "/$rel")"; then
       echo "悬空链接链展开失败: $rel" >&2
@@ -287,7 +301,7 @@ while true; do
       fi
       printf '%s\n' "$hop" >> "$CHAINED"
     done <<< "$hops"
-  done < <(find "$DEST" -xtype l)
+  done <<< "$dangling_list"
   if [[ ! -s "$CHAINED" ]]; then
     break
   fi
