@@ -26,6 +26,11 @@ allowBuilds:
 overrides:
   '@deepseek-ai/dsh': 0.1.5-rc.2
   '@deepseek-ai/dsh-*': 0.1.5-rc.2
+  # node-pty 单一版本：dsh-subprocess-local（访客终端的实际后端）钉 1.2.0-beta.15，
+  # gemini-cli 拖入 1.0.0。两者都是 exact pin，pnpm dedupe 合并不了，只能 override。
+  # 必须选 dsh 的版本：CI 按“恰好一份 node-pty@*”编译 pty.node 给 dsh 用，
+  # 选 gemini 的 1.0.0 会把访客终端的后端换掉；gemini 侧只是外围引用，1.x API 兼容。
+  'node-pty': 1.2.0-beta.15
 
 minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-acp-app@0.1.5-alpha.1'
