@@ -1,7 +1,7 @@
-import { cp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { cp, lstat, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { STATIC_ANCHORS, findMissingAnchors, missingAnchorsMessage } from './anchor-contract.mjs'
+import { STATIC_ANCHORS, findMissingAnchors, isRegularFile, missingAnchorsMessage } from './anchor-contract.mjs'
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const sourceRoot = join(projectRoot, 'node_modules', '@deepseek-ai', 'dsh-web-frontend', 'dist')
@@ -51,8 +51,10 @@ try {
 async function readTextAssets(root, pattern) {
   const chunks = []
   for (const entry of await readdir(root, { recursive: true, withFileTypes: true })) {
-    if (!entry.isFile() || !pattern.test(entry.name)) continue
-    chunks.push(await readFile(resolve(entry.parentPath, entry.name), 'utf8'))
+    if (!pattern.test(entry.name)) continue
+    const fullPath = resolve(entry.parentPath, entry.name)
+    if (!await isRegularFile(entry, fullPath, lstat)) continue
+    chunks.push(await readFile(fullPath, 'utf8'))
   }
   return chunks.join('\n')
 }

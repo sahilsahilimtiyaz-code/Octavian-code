@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { readFile, readdir } from 'node:fs/promises'
+import { lstat, readFile, readdir } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { isRegularFile } from './anchor-contract.mjs'
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const sourceRoot = resolve(projectRoot, 'node_modules/@deepseek-ai/dsh-web-frontend/dist')
@@ -13,8 +14,11 @@ const outputRoot = resolve(projectRoot, 'dist')
 test('built Android frontend preserves every official resource and has one entrypoint', async () => {
   await promisify(execFile)(process.execPath, ['scripts/build-official-frontend.mjs'], { cwd: projectRoot })
   const officialFiles = await readdir(sourceRoot, { recursive: true, withFileTypes: true })
-  for (const entry of officialFiles.filter(entry => entry.isFile())) {
+  let officialCount = 0
+  for (const entry of officialFiles) {
     const sourcePath = resolve(entry.parentPath, entry.name)
+    if (!await isRegularFile(entry, sourcePath, lstat)) continue
+    officialCount += 1
     const targetPath = sourcePath.replace(sourceRoot, outputRoot)
     if (entry.name === 'index.html') continue
     assert.deepEqual(await readFile(targetPath), await readFile(sourcePath), sourcePath)
@@ -28,8 +32,11 @@ test('built Android frontend preserves every official resource and has one entry
   assert.equal(index.match(/href="\/dsh-android.css"/gu)?.length, 1)
   assert.doesNotMatch(index, /dsh-mobile-frontend|plugin-workbench|\/src\//u)
   const outputFiles = await readdir(outputRoot, { recursive: true, withFileTypes: true })
-  assert.equal(outputFiles.filter(entry => entry.isFile()).length,
-    officialFiles.filter(entry => entry.isFile()).length + 1, 'only the adaptation CSS is added')
+  let outputCount = 0
+  for (const entry of outputFiles) {
+    if (await isRegularFile(entry, resolve(entry.parentPath, entry.name), lstat)) outputCount += 1
+  }
+  assert.equal(outputCount, officialCount + 1, 'only the adaptation CSS is added')
   assert.deepEqual(await readFile(resolve(outputRoot, 'dsh-android.css')),
     await readFile(resolve(projectRoot, 'android.css')))
 })

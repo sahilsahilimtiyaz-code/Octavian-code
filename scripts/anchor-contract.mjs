@@ -26,7 +26,8 @@ export const RUNTIME_ANCHORS = [
   { token: 'data-rightbar-col', purpose: '侧栏抽屉的 frame 结构匹配（:has(> [data-rightbar-col])）' },
   { token: 'data-sidebar-collapsed', purpose: '侧栏展开/折叠态判定（覆盖式抽屉仅在展开态生效）' },
   { token: 'data-side', purpose: '拖拽把手从命中树移除（[data-side] 隐藏）' },
-  { token: 'data-phase', purpose: 'composer 间距变量的作用域锚点（[data-phase]）' },
+  { token: 'data-phase', purpose: 'composer 间距变量的作用域锚点（[data-phase]）与忙闲判定（busy 边框只在 submitting/adjudicating 下激活）' },
+  { token: 'data-composer-card', purpose: 'living-light 边框的挂载面（composer 卡片本体，::before/::after 发光层锚定于此）' },
   { token: '--dsh-composer-side-clearance', purpose: '窄屏侧向留白回收（变量覆盖）' },
   { token: '--dsh-chat-content-width', purpose: '内容宽度跟随列，替换 680px 桌面下限（变量覆盖）' },
 ]
@@ -39,6 +40,32 @@ export const RUNTIME_ANCHORS = [
  */
 export function findMissingAnchors(anchors, corpus) {
   return anchors.filter(anchor => !corpus.includes(anchor.token))
+}
+
+/**
+ * 目录项是否为常规文件（含 d_type 缺失时的回退）。
+ *
+ * 部分挂载（FUSE/PRoot 等）不填充 `d_type`，`Dirent.isFile()` 对一切返回 false，
+ * 仅凭它过滤会把整个目录判定为空——构建与锚点检查会误报“锚点缺失”。
+ * 回退用 `lstat`（不跟随符号链接：链接在新旧两条路径下都不计入，保持语义一致），
+ * 只有确认是常规文件才返回 true。
+ * @param {import('node:fs').Dirent} entry - readdir 返回的目录项。
+ * @param {string} fullPath - 该目录项的完整路径（调用方负责拼接）。
+ * @param {(path: string) => Promise<import('node:fs').Stats>} lstat - 注入的 lstat，便于测试。
+ * @returns {Promise<boolean>} 是否为常规文件。
+ */
+export async function isRegularFile(entry, fullPath, lstat) {
+  if (entry.isFile()) return true
+  // 注意：不可信的反向判定——某些挂载不填充 d_type，此时 isDirectory() 等
+  // 同样不可信（实测把常规文件报成符号链接），因此不能提前 return false，
+  // 必须走到 lstat。用 lstat 而不用 stat：不跟随链接，与旧语义一致。
+  try {
+    const st = await lstat(fullPath)
+    if (st.isSymbolicLink()) return false
+    return st.isFile()
+  } catch {
+    return false
+  }
 }
 
 /**

@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
-import { RUNTIME_ANCHORS, STATIC_ANCHORS, findMissingAnchors } from './anchor-contract.mjs'
+import { RUNTIME_ANCHORS, STATIC_ANCHORS, findMissingAnchors, isRegularFile } from './anchor-contract.mjs'
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const frontendRoot = resolve(projectRoot, 'node_modules/@deepseek-ai/dsh-web-frontend/dist')
@@ -59,8 +59,23 @@ test('the runtime anchor guard passes when the plugin tree carries every anchor'
 test('the installed official frontend still carries every static anchor', async () => {
   const chunks = []
   for (const entry of await readdir(frontendRoot, { recursive: true, withFileTypes: true })) {
-    if (!entry.isFile() || !/\.(?:css|js)$/u.test(entry.name)) continue
-    chunks.push(await readFile(resolve(entry.parentPath, entry.name), 'utf8'))
+    if (!/\.(?:css|js)$/u.test(entry.name)) continue
+    const fullPath = resolve(entry.parentPath, entry.name)
+    if (!await isRegularFile(entry, fullPath, lstat)) continue
+    chunks.push(await readFile(fullPath, 'utf8'))
   }
   assert.deepEqual(findMissingAnchors(STATIC_ANCHORS, chunks.join('\n')), [])
+})
+
+test('isRegularFile falls back to lstat when d_type is unknown', async () => {
+  const yes = { isFile: () => true }
+  assert.equal(await isRegularFile(yes, '/x', () => { throw new Error('must not stat') }), true)
+  const unknownFile = { isFile: () => false }
+  assert.equal(await isRegularFile(unknownFile, '/f', async () => ({ isFile: () => true, isSymbolicLink: () => false })), true)
+  assert.equal(await isRegularFile(unknownFile, '/d', async () => ({ isFile: () => false, isSymbolicLink: () => false })), false)
+  // 损坏的 d_type 会把常规文件报成符号链接：不能信反向判定，必须以 lstat 为准。
+  const lyingLink = { isFile: () => false, isSymbolicLink: () => true }
+  assert.equal(await isRegularFile(lyingLink, '/f', async () => ({ isFile: () => true, isSymbolicLink: () => false })), true)
+  assert.equal(await isRegularFile(lyingLink, '/l', async () => ({ isFile: () => false, isSymbolicLink: () => true })), false)
+  assert.equal(await isRegularFile(unknownFile, '/gone', async () => { throw new Error('ENOENT') }), false)
 })
