@@ -59,7 +59,7 @@ ALL_ENTRIES="$(mktemp)"
 COPY_LIST="$(mktemp)"
 NEW_LIBS="$(mktemp)"
 STAGED_PATHS="$(mktemp)"
-trap 'rm -f "$BASE_PATHS" "$ALL_ENTRIES" "$COPY_LIST" "$NEW_LIBS" "$NEW_LIBS.filtered" "$STAGED_PATHS"' EXIT
+trap 'rm -f "$BASE_PATHS" "$ALL_ENTRIES" "$COPY_LIST" "$NEW_LIBS" "$NEW_LIBS.filtered" "$STAGED_PATHS" ${CHAINED:-}' EXIT
 if [[ -n "$BASE_ARCHIVE" && -f "$BASE_ARCHIVE" ]]; then
   # 与 stage-network-tools.sh 同一条注释同样适用：tar 列出的是 `./usr/…` 或
   # `usr/…`，候选清单是绝对路径，写法不归一 `comm` 就永远不匹配，过滤等于没做。
@@ -119,6 +119,100 @@ log "包拥有且命中白名单的路径: ${#OWNED_PATHS[@]} 条"
 enumerate_entries "${OWNED_PATHS[@]}" | sed 's:/$::' | LC_ALL=C sort -u > "$ALL_ENTRIES"
 LC_ALL=C comm -23 "$ALL_ENTRIES" "$BASE_PATHS" > "$COPY_LIST"
 log "候选条目: $(wc -l < "$ALL_ENTRIES")，去掉基线镜像已有后: $(wc -l < "$COPY_LIST")"
+
+# ---- 3b. alternatives 符号链接链展开 --------------------------------------------
+# 真机教训：Ubuntu 用 update-alternatives 管理编译器，/usr/bin/gcc 实际是
+#   /usr/bin/gcc -> /etc/alternatives/gcc -> /usr/bin/gcc-13
+# 这样的两跳链。白名单里只有首尾两端、没有中间的 /etc/alternatives/*，
+# `cp -a` 又原样保留链接文本的话，访客里就是一条断链，
+# require_file（-f 跟随链接）会如实失败——这正是本次 CI 失败的原因。
+# 因此把白名单命中的每条符号链接的整条链收进清单：每一跳都必须落在
+# /usr/** 或 /etc/alternatives/* 内，终点必须是普通文件（目录终点说明
+# SOURCES 该加目录而不是单文件，fail-closed 让作者显式处理）。
+# 链外路径、成环、超深一律直接失败：猜测式拼接不如停下来。
+# 纯字符串路径归一化（折叠 //、单点与双点），不触碰文件系统。
+normalize_link_path() {
+  local path="$1" segment
+  path="${path//\/\//\/}"
+  local -a stack=()
+  IFS='/' read -ra parts <<< "$path" || true
+  for segment in "${parts[@]}"; do
+    case "$segment" in
+      ''|.) continue ;;
+      ..)
+        if ((${#stack[@]} > 0)); then
+          unset 'stack[-1]'
+        fi
+        ;;
+      *) stack+=("$segment") ;;
+    esac
+  done
+  if ((${#stack[@]} == 0)); then
+    printf '/\n'
+  else
+    printf '/%s' "${stack[@]}"
+    printf '\n'
+  fi
+}
+
+resolve_link_chain() {
+  local start="$1" current="$1" seen="" hops=0 target
+  while [[ -L "$current" ]]; do
+    case "$current" in
+      /usr/*|/etc/alternatives/*) ;;
+      *)
+        echo "工具链符号链接逃出允许范围: $start" >&2
+        exit 1
+        ;;
+    esac
+    case "$seen" in
+      *"|$current|"*)
+        echo "工具链符号链接成环: $start" >&2
+        exit 1
+        ;;
+    esac
+    seen+="|$current|"
+    printf '%s\n' "$current"
+    if ! target="$(readlink "$current")"; then
+      echo "工具链符号链接无法读取: $current" >&2
+      exit 1
+    fi
+    if [[ "$target" != /* ]]; then
+      target="$(dirname "$current")/$target"
+    fi
+    current="$(normalize_link_path "$target")"
+    hops=$((hops + 1))
+    if ((hops > 8)); then
+      echo "工具链符号链接过深: $start" >&2
+      exit 1
+    fi
+  done
+  if [[ -d "$current" && ! -L "$current" ]]; then
+    echo "工具链符号链接终点是目录（SOURCES 应收录该目录本身）: $start -> $current" >&2
+    exit 1
+  fi
+  case "$current" in
+    /usr/*) printf '%s\n' "$current" ;;
+    *)
+      echo "工具链符号链接终点不在 /usr 内: $start -> $current" >&2
+      exit 1
+      ;;
+  esac
+}
+CHAINED="$(mktemp)"
+trap 'rm -f "$BASE_PATHS" "$ALL_ENTRIES" "$COPY_LIST" "$NEW_LIBS" "$NEW_LIBS.filtered" "$STAGED_PATHS" "$CHAINED"' EXIT
+while IFS= read -r entry; do
+  if [[ -L "$entry" ]]; then
+    resolve_link_chain "$entry" >> "$CHAINED"
+  fi
+done < "$COPY_LIST"
+if [[ -s "$CHAINED" ]]; then
+  chain_count="$(LC_ALL=C sort -u "$CHAINED" | wc -l)"
+  cat "$CHAINED" >> "$ALL_ENTRIES"
+  LC_ALL=C sort -u -o "$ALL_ENTRIES" "$ALL_ENTRIES"
+  LC_ALL=C comm -23 "$ALL_ENTRIES" "$BASE_PATHS" > "$COPY_LIST"
+  log "符号链接链展开: ${chain_count} 个链上路径，去重过滤后候选: $(wc -l < "$COPY_LIST")"
+fi
 
 # ---- 4. 一次性复制 -------------------------------------------------------------
 mkdir -p "$DEST"
