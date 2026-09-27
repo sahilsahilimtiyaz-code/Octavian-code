@@ -268,26 +268,25 @@ while true; do
   : > "$CHAINED"
   while IFS= read -r link; do
     rel="${link#"$DEST"/}"
-    if ! target="$(readlink -f "/$rel")"; then
-      echo "悬空链接在 runner 上无法求值: $rel" >&2
+    # runner 同位路径上复用 3b 的整链展开（作用域/成环/目录终点/存在性同样
+    # fail-closed）：只取“最终镜像里 druntime 缺的那几跳”，而不是只取终点——
+    # 终点直抄会跳过中间链接，下一轮原地踏步（此前“每轮恒定 N 条”的根因）。
+    if ! hops="$(resolve_link_chain "/$rel")"; then
+      echo "悬空链接链展开失败: $rel" >&2
       exit 1
     fi
-    case "$target" in
-      /usr/*) ;;
-      *)
-        echo "悬空链接目标逃出 /usr，拒绝回填: $rel -> $target" >&2
-        exit 1
-        ;;
-    esac
-    if [[ -d "$target" && ! -L "$target" ]]; then
-      echo "悬空链接目标是目录: $rel -> $target" >&2
-      exit 1
-    fi
-    if [[ ! -e "$target" ]]; then
-      echo "悬空链接目标在 runner 上就不存在: $rel -> $target" >&2
-      exit 1
-    fi
-    printf '%s\n' "$target" >> "$CHAINED"
+    while IFS= read -r hop; do
+      [[ -n "$hop" ]] || continue
+      # 基线已有：在最终镜像里自然解析，不收纳（否则每轮重复发现，无法收敛）。
+      if grep -qxF "$hop" "$BASE_PATHS"; then
+        continue
+      fi
+      # 本树已有：无需重复收纳。
+      if [[ -e "$DEST/${hop#/}" ]]; then
+        continue
+      fi
+      printf '%s\n' "$hop" >> "$CHAINED"
+    done <<< "$hops"
   done < <(find "$DEST" -xtype l)
   if [[ ! -s "$CHAINED" ]]; then
     break
@@ -412,6 +411,10 @@ while IFS= read -r link; do
   else
     candidate="$mapped/$target"
   fi
+  # 相对目标含 .. 时必须先折叠再比对：基线清单里是折叠后的形态，
+  # 不折叠会把“最终镜像里能解析”的链接误判为悬空（libstdc++.so 系列即此形态）。
+  candidate="$(normalize_link_path "/$candidate")"
+  candidate="${candidate#/}"
   if [[ -e "$DEST/$candidate" ]] || grep -qxF "/$candidate" "$BASE_PATHS"; then
     continue
   fi
