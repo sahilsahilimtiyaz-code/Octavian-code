@@ -10,7 +10,8 @@
 #   * 路径形态不同：这里没有需要硬链接去重的 git-core，也没有 CA 信任库要重建。
 #
 # 包选择（刻意最小可用，不是 build-essential）：
-#   gcc / g++ / make / libc6-dev / libstdc++-dev / pkg-config / binutils。
+#   gcc / g++ / make / libc6-dev / pkg-config / binutils + 版本探测到的
+#   libstdc++-N-dev / linux-libc-dev（无稳定包名，见下）。
 #   - g++ 在列：node-gyp 等原生模块绝大多数是 C++，缺 g++ 等于白装；
 #   - perl 系（build-essential 拖进来的 dpkg-dev 等）不在列：与网络组件一致，
 #     镜像里不跑 apt，不需要打包工具链；
@@ -32,10 +33,25 @@ PACKAGE_LIST="${3:-${DEST%/}-packages.txt}"
 log() { printf '[stage-build-tools] %s\n' "$*"; }
 
 # ---- 1. 在 runner 上安装组件（不在镜像里跑 apt）--------------------------------
-PACKAGES=(gcc g++ make libc6-dev libstdc++-dev pkg-config binutils)
+# 注意：libstdc++-dev 这个名字在 Ubuntu 上不存在（只有 libstdc++-13-dev 这类
+# 版本化名字），写进 PACKAGES 会直接 exit 100。这里只装真实存在的包，
+# C++ 头文件包与内核头文件包在装完后按实际版本探测（见下）。
+PACKAGES=(gcc g++ make libc6-dev pkg-config binutils)
 sudo apt-get update -qq
 sudo apt-get install -y -qq --no-install-recommends "${PACKAGES[@]}"
 log "已安装: ${PACKAGES[*]}"
+# 版本化包探测：g++ 会把对应版本的 libstdc++-N-dev 作为依赖带入，
+# libc6-dev 会把 linux-libc-dev 带入（C 头文件间接需要的内核头）。
+# 硬编码版本号会在下次 Ubuntu 升级时过期，所以运行时探测实际装了什么。
+mapfile -t VERSIONED_DEV_PKGS < <(
+  dpkg -l 'libstdc++-*-dev' linux-libc-dev 2>/dev/null | awk '$1 == "ii" { sub(/:.*$/, "", $2); print $2 }'
+)
+if ((${#VERSIONED_DEV_PKGS[@]} == 0)); then
+  echo "未找到已安装的 C++ / 内核头文件包（libstdc++-N-dev、linux-libc-dev），g++ 依赖可能未正确安装" >&2
+  exit 1
+fi
+log "探测到版本化头文件包: ${VERSIONED_DEV_PKGS[*]}"
+ENUM_PKGS=("${PACKAGES[@]}" "${VERSIONED_DEV_PKGS[@]}")
 
 # ---- 2. 基线镜像已有路径（过滤掉，避免 rootfs 重复条目）------------------------
 BASE_PATHS="$(mktemp)"
@@ -61,7 +77,7 @@ fi
 # 丢弃：文档/man/locale/info、静态库（.a）、其它一切。
 collect_owned_paths() {
   local pkg owned
-  for pkg in "${PACKAGES[@]}"; do
+  for pkg in "${ENUM_PKGS[@]}"; do
     while IFS= read -r owned; do
       [[ -n "$owned" ]] || continue
       case "$owned" in
