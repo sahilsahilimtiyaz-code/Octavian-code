@@ -208,21 +208,40 @@ resolve_link_chain() {
       exit 1
       ;;
   esac
+  if [[ ! -e "$current" ]]; then
+    echo "工具链符号链接终点在 runner 上就不存在: $start -> $current" >&2
+    exit 1
+  fi
 }
 CHAINED="$(mktemp)"
 trap 'rm -f "$BASE_PATHS" "$ALL_ENTRIES" "$COPY_LIST" "$NEW_LIBS" "$NEW_LIBS.filtered" "$STAGED_PATHS" "$CHAINED"' EXIT
-while IFS= read -r entry; do
-  if [[ -L "$entry" ]]; then
-    resolve_link_chain "$entry" >> "$CHAINED"
+# 传递闭包：新收进来的每一跳本身也可能是链接（libstdc++.so →
+# libstdc++.so.6 → libstdc++.so.6.0.33 就是两跳），单遍只展开最初白名单命中的
+# 条目，次级链接的终点会漏掉，访客里照样断链——这次 CI 失败的就是这个形态。
+# 因此循环直到清单不再增长；WALKED 保证每条链接只走一次。
+declare -A WALKED=()
+round=0
+while true; do
+  round=$((round + 1))
+  if ((round > 10)); then
+    echo "符号链接链展开不收敛" >&2
+    exit 1
   fi
-done < "$COPY_LIST"
-if [[ -s "$CHAINED" ]]; then
-  chain_count="$(LC_ALL=C sort -u "$CHAINED" | wc -l)"
+  : > "$CHAINED"
+  while IFS= read -r entry; do
+    if [[ -L "$entry" && -z "${WALKED["$entry"]:-}" ]]; then
+      resolve_link_chain "$entry" >> "$CHAINED"
+      WALKED["$entry"]=1
+    fi
+  done < "$COPY_LIST"
+  if [[ ! -s "$CHAINED" ]]; then
+    break
+  fi
   cat "$CHAINED" >> "$ALL_ENTRIES"
   LC_ALL=C sort -u -o "$ALL_ENTRIES" "$ALL_ENTRIES"
   LC_ALL=C comm -23 "$ALL_ENTRIES" "$BASE_PATHS" > "$COPY_LIST"
-  log "符号链接链展开: ${chain_count} 个链上路径，去重过滤后候选: $(wc -l < "$COPY_LIST")"
-fi
+done
+log "符号链接链展开（传递闭包 ${round} 轮）：去重过滤后候选: $(wc -l < "$COPY_LIST")"
 
 # ---- 4. 一次性复制 -------------------------------------------------------------
 mkdir -p "$DEST"
@@ -231,6 +250,53 @@ if [[ -s "$COPY_LIST" ]]; then
   cp -a --parents "${COPY_PATHS[@]}" "$DEST/"
   cat "$COPY_LIST" >> "$STAGED_PATHS"
 fi
+
+# ---- 4b. 悬空链接回填（按 DEST 现实收敛） ----------------------------------------
+# 3b 是“预测”（从白名单出发走链），这里是“验收”：dev 包的 .so 链接常指向
+# 运行包目录的文件，任何一跳漏网（白名单没覆盖、归一化与发行版实际不一致）
+# 都会在这里现形为 DEST 内的悬空链接。对每条悬空链接，用 runner 上的同位
+# 路径求值（readlink -f，不自己拼字符串），目标必须真实存在且落在 /usr/**
+# 内，否则失败；收进清单后重新过滤基线并补复制。循环到无悬空或超限。
+# 回填的每条路径都打进日志：清单之外的增量必须可审计。
+backfill_round=0
+while true; do
+  backfill_round=$((backfill_round + 1))
+  if ((backfill_round > 10)); then
+    echo "悬空链接回填不收敛" >&2
+    exit 1
+  fi
+  : > "$CHAINED"
+  while IFS= read -r link; do
+    rel="${link#"$DEST"/}"
+    if ! target="$(readlink -f "/$rel")"; then
+      echo "悬空链接在 runner 上无法求值: $rel" >&2
+      exit 1
+    fi
+    case "$target" in
+      /usr/*) ;;
+      *)
+        echo "悬空链接目标逃出 /usr，拒绝回填: $rel -> $target" >&2
+        exit 1
+        ;;
+    esac
+    if [[ -d "$target" && ! -L "$target" ]]; then
+      echo "悬空链接目标是目录: $rel -> $target" >&2
+      exit 1
+    fi
+    printf '%s\n' "${target#/}" >> "$CHAINED"
+  done < <(find "$DEST" -xtype l)
+  if [[ ! -s "$CHAINED" ]]; then
+    break
+  fi
+  LC_ALL=C sort -u -o "$CHAINED" "$CHAINED"
+  log "悬空链接回填第 ${backfill_round} 轮: $(wc -l < "$CHAINED") 条"
+  cat "$CHAINED" >> "$ALL_ENTRIES"
+  LC_ALL=C sort -u -o "$ALL_ENTRIES" "$ALL_ENTRIES"
+  LC_ALL=C comm -23 "$ALL_ENTRIES" "$BASE_PATHS" > "$COPY_LIST"
+  mapfile -t COPY_PATHS < "$COPY_LIST"
+  cp -a --parents "${COPY_PATHS[@]}" "$DEST/"
+  cat "$COPY_LIST" >> "$STAGED_PATHS"
+done
 
 # ---- 5. 共享库传递闭包（ldd 优先、readelf 兜底，与网络组件同一套教训） ---------
 # O-7 的根因在这里同样成立：只看二进制存在与否不看依赖，libmpfr/libmpc/libgmp
