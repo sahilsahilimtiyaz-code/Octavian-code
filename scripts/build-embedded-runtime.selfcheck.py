@@ -663,6 +663,53 @@ def main() -> int:
             + (f"exec /opt/node/bin/node /opt/dsh/{target} \"$@\"\n" if via_node else f"exec /opt/dsh/{target} \"$@\"\n").encode("utf-8")
         )
         assert wrapper_path.startswith("usr/local/bin/") and target.startswith("node_modules/")
+    assert module.AGENT_CLI_MIN_NATIVE_BYTES == 65536
+
+    def make_agent_root(root: Path, *, stub_bytes: int | None = None, with_scripts: bool = True) -> Path:
+        """Fake dsh_root: finalize 脚本秒退，.exe 要么是真二进制体量要么是报错桩。"""
+        dsh_root = root / "dsh-root"
+        if with_scripts:
+            for script in module.AGENT_CLI_FINALIZE_SCRIPTS:
+                path = dsh_root / script
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("process.exit(0);\n", encoding="utf-8")
+        payload = b"x" * (stub_bytes if stub_bytes is not None else module.AGENT_CLI_MIN_NATIVE_BYTES + 1)
+        for source, _ in module.AGENT_CLI_NATIVE_COPIES:
+            path = dsh_root / source
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(payload)
+        for _, target, _ in module.AGENT_CLI_WRAPPERS:
+            if target.endswith(".js"):
+                path = dsh_root / target
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("export {};\n", encoding="utf-8")
+        return dsh_root
+
+    def expect_agent_error(action, label: str) -> None:
+        try:
+            action()
+        except module.BuildError:
+            return
+        raise AssertionError(f"该用例应当失败但没有: {label}")
+
+    with tempfile.TemporaryDirectory(prefix="dsh-agent-finalize-") as directory:
+        root = Path(directory)
+        # 缺 finalize 脚本直接失败。
+        expect_agent_error(
+            lambda: module.finalize_agent_cli_binaries(make_agent_root(root / "missing", with_scripts=False)),
+            "finalize 脚本缺失",
+        )
+        # 500B 报错桩必须被体积下限拦住，不能静默打进镜像。
+        expect_agent_error(
+            lambda: module.finalize_agent_cli_binaries(make_agent_root(root / "stub", stub_bytes=500)),
+            "报错桩二进制",
+        )
+        # 正常路径：拷贝落盘且 0755。
+        module.finalize_agent_cli_binaries(make_agent_root(root / "ok"))
+        for _, dest in module.AGENT_CLI_NATIVE_COPIES:
+            copied = root / "ok" / "dsh-root" / dest
+            assert copied.is_file() and copied.stat().st_size == module.AGENT_CLI_MIN_NATIVE_BYTES + 1
+            assert copied.stat().st_mode & 0o777 == 0o755
     assert module.WEB_PROFILE_PNPM_WORKSPACE == (
         b"packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n"
     )

@@ -10,6 +10,13 @@ allowBuilds:
   cloudflared: true
   cpu-features: true
   ssh2: true
+  # P3 agent CLIs：三家包内 postinstall 负责把平台二进制落到 bin/（opencode 解析
+  # optional 依赖、claude 复制 optional 原生包、keytar 复制预置 prebuild），
+  # 跳过则三者 bin/ 里只剩报错桩。CI 跑裸 `pnpm install`（无 --ignore-scripts，
+  # 因为 node-pty 必须现场编译），缺了这三项即是 IGNORED_BUILDS 硬错误。
+  opencode-ai: true
+  "@anthropic-ai/claude-code": true
+  "@github/keytar": true
 
 # 强制整个 @deepseek-ai/dsh 家族解析到同一版本。
 # 这些包通过 Symbol 作为 key 在 cordis 注册表里挂服务（例如 dsh-tools 的

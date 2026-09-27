@@ -83,6 +83,11 @@ AGENT_CLI_NATIVE_COPIES = (
     ("node_modules/opencode-ai/bin/opencode.exe", "node_modules/opencode-ai/bin/opencode-linux-arm64"),
     ("node_modules/@anthropic-ai/claude-code/bin/claude.exe", "node_modules/@anthropic-ai/claude-code/bin/claude-linux-arm64"),
 )
+# 原生二进制体积下限：包内 finalize 脚本在找不到平台包时会静默留下报错桩
+# （实测 claude 桩约 500B，只打印 fallback 说明）。真二进制都是几十 MB，
+# 64KB 两边都有数量级的余量，低于此值说明 finalize 没干活，必须失败而不是
+# 把坏桩打进镜像（verify-bundle 只查存在 + 可执行，查不出桩）。
+AGENT_CLI_MIN_NATIVE_BYTES = 65536
 
 
 def agent_cli_wrapper(target: str, via_node: bool) -> bytes:
@@ -115,6 +120,11 @@ def finalize_agent_cli_binaries(dsh_root: Path) -> None:
         dst = dsh_root / dest
         if not src.is_file() or src.stat().st_size == 0:
             raise BuildError(f"agent CLI native binary missing: {source}")
+        if src.stat().st_size < AGENT_CLI_MIN_NATIVE_BYTES:
+            raise BuildError(
+                f"agent CLI native binary looks like an unfinalized stub: {source} "
+                f"({src.stat().st_size} bytes)"
+            )
         shutil.copyfile(src, dst)
         os.chmod(dst, 0o755)
     for _, target, _ in AGENT_CLI_WRAPPERS:
