@@ -283,7 +283,11 @@ while true; do
       echo "悬空链接目标是目录: $rel -> $target" >&2
       exit 1
     fi
-    printf '%s\n' "${target#/}" >> "$CHAINED"
+    if [[ ! -e "$target" ]]; then
+      echo "悬空链接目标在 runner 上就不存在: $rel -> $target" >&2
+      exit 1
+    fi
+    printf '%s\n' "$target" >> "$CHAINED"
   done < <(find "$DEST" -xtype l)
   if [[ ! -s "$CHAINED" ]]; then
     break
