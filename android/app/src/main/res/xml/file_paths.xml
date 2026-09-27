@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 只暴露临时生成的诊断日志和工作区副本。运行时原文件不由 FileProvider 直接分享。 -->
+<paths>
+    <cache-path
+        name="diagnostics"
+        path="diagnostics/" />
+    <cache-path
+        name="workspace-share"
+        path="share/" />
+</paths>

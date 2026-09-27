@@ -1,0 +1,386 @@
+import { validatePluginRequest } from './plugins'
+import type {
+  AgentCliStates,
+  DiagnosticLogState,
+  DiagnosticLogText,
+  HarnessLog,
+  KeepAliveState,
+  ListenerHandle,
+  MailboxState,
+  ModelProviderId,
+  OverlayBallState,
+  ProviderApiKeys,
+  RuntimeBridge,
+  RuntimeProgress,
+  RuntimeSettings,
+  RuntimeState,
+  RuntimeVersionsState,
+  ShizukuState,
+  StorageAccessState,
+  StorageDirsState,
+  TerminalChunk,
+  TerminalExit,
+  TerminalKind,
+} from './types'
+import { DIAGNOSTIC_RETENTION_DEFAULT, MAX_STORAGE_DIRECTORIES, MODEL_PROVIDER_IDS } from './types'
+import { validateSelfCheckOperation, type SelfCheckOperation, type SelfCheckReport } from '../runtimeSelfCheck'
+import { assertMailboxSubdirectory, assertRuntimeVersionTarget, assertSessionId, assertStorageDirPath, validateDeviceCommand, validateDeviceCommandParam, validateSettings, validateSettingsUpdate, validateRuntimeSource } from './validation'
+
+const SETTINGS_KEY = 'dsh-mobile-settings-v1'
+/** 文档里的固定投递区路径；浏览器预览只用来**展示**，不声称它可用（见 getMailboxState）。 */
+const BROWSER_MAILBOX_ROOT = '/storage/emulated/0/Documents/DSH'
+const encoder = new TextEncoder()
+const decoder = new TextDecoder()
+
+const DEFAULT_SETTINGS: RuntimeSettings = {
+  manifestUrl: 'https://downloads.example.invalid/deepseek-harness/android/manifest.json',
+  manifestSha256: '0'.repeat(64),
+  keepScreenAwake: true,
+  terminalFontSize: 14,
+  configuredModelProviders: [],
+  autoLaunch: false,
+  // 浏览器预览没有前台服务：保持关闭，避免给出错误的保活预期。
+  keepRuntimeInBackground: false,
+}
+function listenerHandle(remove: () => void): ListenerHandle {
+  return {
+    remove: () => {
+      remove()
+      return Promise.resolve()
+    },
+  }
+}
+
+export function createBrowserBridge(): RuntimeBridge {
+  let currentSettings = { ...DEFAULT_SETTINGS }
+  const configuredProviders = new Set<ModelProviderId>()
+  const volatileProviderKeys: ProviderApiKeys = {}
+  const configuredCustomProviders = new Set<string>()
+  let state: RuntimeState = {
+    phase: 'not-installed',
+    architecture: 'arm64-v8a',
+    updateAvailable: false,
+    downloadedBytes: 0,
+    totalBytes: 640 * 1024 * 1024,
+    runnerAvailable: true,
+  }
+  let shizuku: ShizukuState = { installed: true, running: true, permission: 'undetermined', connected: false }
+  let diagnosticState: DiagnosticLogState = {
+    enabled: false,
+    retentionDays: DIAGNOSTIC_RETENTION_DEFAULT,
+    fileCount: 0,
+    totalBytes: 0,
+    lastEntryAtMillis: 0,
+  }
+  const progressListeners = new Set<(event: RuntimeProgress) => void>()
+  const outputListeners = new Set<(event: TerminalChunk) => void>()
+  const exitListeners = new Set<(event: TerminalExit) => void>()
+  const sessions = new Map<string, TerminalKind>()
+
+  const emitProgress = (): void => {
+    const event: RuntimeProgress = {
+      phase: state.phase,
+      downloadedBytes: state.downloadedBytes,
+      totalBytes: state.totalBytes,
+    }
+    progressListeners.forEach(listener => listener(event))
+  }
+
+  return {
+    managePlugins: request => {
+      validatePluginRequest(request)
+      if (request.operation !== 'list') return Promise.reject(new Error('浏览器预览不支持修改设备插件'))
+      return Promise.resolve({ plugins: [] })
+    },
+    setAppLanguage: language => language === 'zh-CN' || language === 'en'
+      ? Promise.resolve()
+      : Promise.reject(new Error('不支持的应用语言')),
+    // 浏览器预览没有窗口装饰可染色：如实按「已接受」返回，不做假的成功提示。
+    // DOM 侧的主题落地由 src/theme.ts 自己完成，不经过这条桥。
+    setAppTheme: mode => mode === 'system' || mode === 'light' || mode === 'dark'
+      ? Promise.resolve()
+      : Promise.reject(new Error('不支持的主题模式')),
+    getState: () => Promise.resolve({ ...state }),
+    getSettings: () => {
+      const saved = localStorage.getItem(SETTINGS_KEY)
+      if (saved === null) return Promise.resolve({ ...currentSettings })
+      try {
+        const raw = JSON.parse(saved) as RuntimeSettings
+        currentSettings = validateSettings(raw)
+        currentSettings.configuredModelProviders.forEach(provider => configuredProviders.add(provider))
+        currentSettings.configuredCustomModelProviders?.forEach(id => configuredCustomProviders.add(id))
+        if (typeof raw.apiKey === 'string' && raw.apiKey.trim() !== '') volatileProviderKeys.deepseek = raw.apiKey.trim()
+        currentSettings = { ...currentSettings, configuredModelProviders: MODEL_PROVIDER_IDS.filter(provider => configuredProviders.has(provider)) }
+        // Browser preview storage mirrors production by retaining only masked credential state.
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify(currentSettings))
+        return Promise.resolve({ ...currentSettings })
+      } catch {
+        currentSettings = { ...DEFAULT_SETTINGS }
+        return Promise.resolve({ ...currentSettings })
+      }
+    },
+    saveSettings: settings => {
+      const validated = validateSettingsUpdate(settings)
+      Object.entries(validated.providerApiKeys ?? {}).forEach(([provider, key]) => {
+        volatileProviderKeys[provider as ModelProviderId] = key
+        configuredProviders.add(provider as ModelProviderId)
+      })
+      validated.clearProviderApiKeys?.forEach(provider => {
+        delete volatileProviderKeys[provider]
+        configuredProviders.delete(provider)
+      })
+      const allowedCustomIds = new Set(validated.customModelProviders?.map(provider => provider.id))
+      for (const id of configuredCustomProviders) if (!allowedCustomIds.has(id)) configuredCustomProviders.delete(id)
+      Object.keys(validated.customProviderApiKeys ?? {}).forEach(id => configuredCustomProviders.add(id))
+      validated.clearCustomProviderApiKeys?.forEach(id => configuredCustomProviders.delete(id))
+      currentSettings = validateSettings({
+        ...validated,
+        harnessPermissionMode: validated.harnessPermissionMode ?? currentSettings.harnessPermissionMode ?? 'workspace-write',
+        // The native bridge treats an omitted field as "leave unchanged" so an
+        // overlay-ball menu action cannot be overwritten by an unrelated save.
+        overlayBallEnabled: settings.overlayBallEnabled === undefined
+          ? currentSettings.overlayBallEnabled ?? false
+          : validated.overlayBallEnabled,
+        configuredModelProviders: MODEL_PROVIDER_IDS.filter(provider => configuredProviders.has(provider)),
+        configuredCustomModelProviders: [...configuredCustomProviders],
+      })
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(currentSettings))
+      return Promise.resolve({ ...currentSettings })
+    },
+    install: async source => {
+      const validatedSource = source === undefined ? undefined : validateRuntimeSource(source)
+      const acquisitionPhase = validatedSource === undefined || validatedSource.manifestUrl === '' ? 'preparing' : 'downloading'
+      state = { ...state, phase: acquisitionPhase, downloadedBytes: 0, errorCode: undefined }
+      emitProgress()
+      for (const percent of [0.12, 0.31, 0.56, 0.78, 1]) {
+        await new Promise(resolve => window.setTimeout(resolve, 120))
+        state = { ...state, downloadedBytes: Math.round(state.totalBytes * percent) }
+        emitProgress()
+      }
+      state = { ...state, phase: 'verifying' }
+      emitProgress()
+      await new Promise(resolve => window.setTimeout(resolve, 180))
+      state = { ...state, phase: 'extracting' }
+      emitProgress()
+      for (const percent of [0.18, 0.47, 0.73, 1]) {
+        await new Promise(resolve => window.setTimeout(resolve, 80))
+        state = { ...state, downloadedBytes: Math.round(state.totalBytes * percent) }
+        emitProgress()
+      }
+      state = { ...state, phase: 'ready', installedVersion: '2026.08.1', updateAvailable: false }
+      emitProgress()
+    },
+    startHarness: () => {
+      state = { ...state, phase: 'running', harnessUrl: 'http://127.0.0.1:3080/' }
+      return Promise.resolve({ ...state })
+    },
+    openHarness: () => {
+      if (state.phase !== 'running' || state.harnessUrl === undefined) throw new Error('Harness 尚未运行')
+      const url = new URL(state.harnessUrl)
+      window.open(url.toString(), '_blank', 'noopener,noreferrer')
+      return Promise.resolve()
+    },
+    stopRuntime: () => {
+      state = { ...state, phase: state.installedVersion === undefined ? 'not-installed' : 'ready', harnessUrl: undefined }
+      return Promise.resolve({ ...state })
+    },
+    reset: confirmation => {
+      if (confirmation !== 'RESET_RUNTIME') throw new Error('重置确认无效')
+      state = {
+        phase: 'not-installed',
+        architecture: state.architecture,
+        updateAvailable: false,
+        downloadedBytes: 0,
+        totalBytes: state.totalBytes,
+        runnerAvailable: state.runnerAvailable,
+      }
+      return Promise.resolve({ ...state })
+    },
+    createTerminal: (kind, columns, rows) => {
+      if (kind === 'device' && shizuku.permission !== 'granted') throw new Error('需要 Shizuku 授权')
+      const sessionId = crypto.randomUUID()
+      sessions.set(sessionId, kind)
+      window.setTimeout(() => {
+        const prefix = kind === 'ubuntu' ? 'ubuntu@dsh:/workspace$ ' : 'shell@android:/ $ '
+        outputListeners.forEach(listener => listener({
+          sessionId,
+          dataBase64: btoa(String.fromCharCode(...encoder.encode(`\r\n${prefix}`))),
+        }))
+      }, 40)
+      void columns
+      void rows
+      return Promise.resolve({ sessionId })
+    },
+    writeTerminal: (sessionId, dataBase64) => {
+      if (!sessions.has(sessionId)) throw new Error('终端会话不存在')
+      const bytes = Uint8Array.from(atob(dataBase64), char => char.charCodeAt(0))
+      const input = decoder.decode(bytes)
+      const output = input === '\r' ? '\r\n' : input
+      outputListeners.forEach(listener => listener({
+        sessionId,
+        dataBase64: btoa(String.fromCharCode(...encoder.encode(output))),
+      }))
+      return Promise.resolve()
+    },
+    resizeTerminal: () => Promise.resolve(),
+    closeTerminal: sessionId => {
+      if (sessions.delete(sessionId)) exitListeners.forEach(listener => listener({ sessionId, exitCode: 0 }))
+      return Promise.resolve()
+    },
+    execDeviceCommand: (sessionId, command, param) => {
+      assertSessionId(sessionId)
+      validateDeviceCommand(command)
+      validateDeviceCommandParam(param)
+      // 浏览器预览环境没有真实设备 Shell：按失败返回（fail-closed）。
+      return Promise.resolve({ ok: false, exitCode: -1, text: '', truncated: false })
+    },
+    getShizukuState: () => Promise.resolve({ ...shizuku }),
+    requestShizukuPermission: () => {
+      shizuku = { ...shizuku, permission: 'granted', connected: true }
+      return Promise.resolve({ ...shizuku })
+    },
+    connectShizuku: () => {
+      if (shizuku.permission === 'granted') shizuku = { ...shizuku, connected: true }
+      return Promise.resolve({ ...shizuku })
+    },
+    openShizuku: () => Promise.resolve(),
+    // 浏览器预览没有 Android 前台服务：如实报告未运行，避免误导保活预期。
+    getKeepAliveState: (): Promise<KeepAliveState> => Promise.resolve({
+      keepRuntimeInBackground: currentSettings.keepRuntimeInBackground === true,
+      foregroundServiceActive: false,
+      notificationPermission: 'unsupported',
+      deviceShellReady: shizuku.installed && shizuku.running && shizuku.permission === 'granted',
+      reconnectRequired: false,
+      lastIntent: state.phase === 'running' ? 'running' : 'stopped',
+    }),
+    requestNotificationPermission: () => Promise.resolve({ granted: false, supported: false }),
+    // 浏览器预览没有系统悬浮窗：始终报告未开启且无权限，界面据此隐藏入口。
+    getOverlayBallState: (): Promise<OverlayBallState> => Promise.resolve({
+      enabled: false,
+      canDrawOverlays: false,
+      serviceActive: false,
+    }),
+    // 浏览器里没有可跳转的系统设置页；静默无操作，不抛错以免打断预览。
+    openOverlaySettings: (): Promise<void> => Promise.resolve(),
+    /**
+     * 浏览器预览没有 Android 的公共存储与 PRoot 访客：投递区**如实报不可用**。
+     *
+     * 刻意不走「编造一份可用的状态」这条捷径：路径是文档里的固定路径，
+     * 但 `available` 恒为 false、计数恒为 0，界面因此只会显示「不支持」而不会给出可点的按钮。
+     * 授权档位按「系统不存在这一档」上报（`unsupported` / T0），因为浏览器里确实没有
+     * 「所有文件访问」这个权限可授予。
+     */
+    getMailboxState: (): Promise<MailboxState> => Promise.resolve({
+      availability: 'unsupported',
+      level: 'T0',
+      available: false,
+      supported: false,
+      granted: false,
+      inboxPath: `${BROWSER_MAILBOX_ROOT}/inbox`,
+      outboxPath: `${BROWSER_MAILBOX_ROOT}/outbox`,
+      guestInboxPath: '/mnt/inbox',
+      guestOutboxPath: '/mnt/outbox',
+      inboxFileCount: 0,
+      inboxTars: [],
+      exportTarName: 'dsh-workspace.tar',
+      exportManifestName: 'dsh-workspace.manifest.json',
+      importDirectory: 'mailbox-import',
+    }),
+    getStorageAccessState: (): Promise<StorageAccessState> => Promise.resolve({
+      mediaGranted: false,
+      allFilesGranted: false,
+      allFilesSupported: false,
+      sdkInt: 0,
+    }),
+    // 浏览器里没有可申请的 Android 权限：不弹任何东西，也不假装已授权。
+    requestMediaPermission: () => Promise.resolve({ granted: false }),
+    openAllFilesAccessSettings: () => Promise.resolve({ supported: false, granted: false }),
+    // 没有真实文件系统可搬运：明确拒绝，不编造条目数与摘要。
+    importMailbox: () => Promise.reject(new Error('浏览器预览不支持导入投递区')),
+    exportMailbox: subdirectory => {
+      assertMailboxSubdirectory(subdirectory)
+      return Promise.reject(new Error('浏览器预览不支持导出投递区'))
+    },
+    /**
+     * 浏览器预览没有 Android 的共享存储、没有 SAF 选择器，也没有 PRoot 访客：
+     * 目录白名单**如实报不可用**（空列表 + `supported`/`granted` 全 false）。
+     *
+     * 与投递区同一口径：不编造一份「看起来能用」的状态。上限照实回传 8 —— 它是文档里的固定值，
+     * 界面据此显示「0/8」而不是把上限也藏起来。
+     */
+    getStorageDirs: (): Promise<StorageDirsState> => Promise.resolve({
+      entries: [],
+      maxDirectories: MAX_STORAGE_DIRECTORIES,
+      count: 0,
+      supported: false,
+      granted: false,
+      level: 'T0',
+      active: false,
+    }),
+    // 浏览器里没有可弹的目录选择器：明确拒绝，不假装加了一条。
+    addStorageDirectory: () => Promise.reject(new Error('浏览器预览不支持选择存储目录')),
+    removeStorageDirectory: path => {
+      assertStorageDirPath(path)
+      return Promise.reject(new Error('浏览器预览不支持移除存储目录'))
+    },
+    // 浏览器预览里没有访客进程，也就没有可读的输出尾部：如实返回不可用，不编造内容。
+    getHarnessLog: (options): Promise<HarnessLog> => Promise.resolve({
+      available: false,
+      text: '',
+      maxBytes: options?.maxBytes === 64 * 1024 || options?.maxBytes === 256 * 1024 ? options.maxBytes : 8 * 1024,
+    }),
+    // 浏览器预览没有访客运行时，也就没有可自检的链路：如实拒绝，不编造一份「全部正常」的结果。
+    runRuntimeSelfCheck: (operation: SelfCheckOperation): Promise<SelfCheckReport> => {
+      validateSelfCheckOperation(operation)
+      return Promise.reject(new Error('浏览器预览不支持运行时自检'))
+    },
+    // 浏览器预览里没有访客运行时，也就没有版本槽可列出或切换：如实拒绝，不编造版本列表。
+    getRuntimeVersions: (): Promise<RuntimeVersionsState> => Promise.reject(new Error('浏览器预览不支持运行时版本管理')),
+    switchRuntimeVersion: (target): Promise<RuntimeVersionsState> => {
+      assertRuntimeVersionTarget(target)
+      return Promise.reject(new Error('浏览器预览不支持运行时版本管理'))
+    },
+    deleteRuntimeVersion: (target): Promise<RuntimeVersionsState> => {
+      assertRuntimeVersionTarget(target)
+      return Promise.reject(new Error('浏览器预览不支持运行时版本管理'))
+    },
+    // 浏览器预览里没有访客运行时，也没有可下载的 Agent：状态按空列表返回，安装如实拒绝。
+    agentCliState: (): Promise<AgentCliStates> => Promise.resolve({ agents: [] }),
+    installAgentCli: (): Promise<AgentCliStates> => Promise.reject(new Error('浏览器预览不支持下载 Agent')),
+    // 浏览器预览没有原生诊断日志：保持关闭且不可导出，避免给出「已经采集到东西」的错觉。
+    getDiagnosticLogState: (): Promise<DiagnosticLogState> => Promise.resolve({ ...diagnosticState }),
+    // 同理，预览里没有可查看的正文；返回空窗口而不是编造几条假记录。
+    readDiagnosticLog: (options): Promise<DiagnosticLogText> => Promise.resolve({
+      text: '',
+      maxBytes: options?.maxBytes === 256 * 1024 ? 256 * 1024 : 64 * 1024,
+      totalBytes: diagnosticState.totalBytes,
+      truncated: false,
+    }),
+    setDiagnosticLogSettings: (enabled: boolean, retentionDays: number) => {
+      diagnosticState = { ...diagnosticState, enabled, retentionDays }
+      return Promise.resolve({ ...diagnosticState })
+    },
+    shareDiagnosticLog: () => Promise.reject(new Error('浏览器预览不支持导出诊断日志')),
+    shareRuntimeWorkspace: () => Promise.reject(new Error('浏览器预览不支持分享运行时工作区')),
+    listRuntimeWorkspaceFiles: () => Promise.reject(new Error('浏览器预览不支持读取运行时工作区')),
+    shareRuntimeWorkspaceFile: () => Promise.reject(new Error('浏览器预览不支持分享运行时文件')),
+    openRuntimeWorkspaceFile: () => Promise.reject(new Error('浏览器预览不支持打开运行时文件')),
+    deleteRuntimeWorkspaceFile: () => Promise.reject(new Error('浏览器预览不支持删除运行时文件')),
+    clearDiagnosticLog: () => {
+      diagnosticState = { ...diagnosticState, fileCount: 0, totalBytes: 0, lastEntryAtMillis: 0 }
+      return Promise.resolve({ ...diagnosticState })
+    },
+    addRuntimeProgressListener: listener => {
+      progressListeners.add(listener)
+      return Promise.resolve(listenerHandle(() => progressListeners.delete(listener)))
+    },
+    addTerminalOutputListener: listener => {
+      outputListeners.add(listener)
+      return Promise.resolve(listenerHandle(() => outputListeners.delete(listener)))
+    },
+    addTerminalExitListener: listener => {
+      exitListeners.add(listener)
+      return Promise.resolve(listenerHandle(() => exitListeners.delete(listener)))
+    },
+  }
+}

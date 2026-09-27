@@ -1,0 +1,214 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+def envBuildValue = { String name ->
+    def value = System.getenv(name) ?: ''
+    return '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"'
+}
+
+// 团队统一签名（debug/release 共用）：防止不同开发者或 CI 用各自密钥签名，
+// 导致设备覆盖安装时报「应用签名与已安装版本不一致」。密钥库与密码均不入库：
+//   - 本地开发：android/keystore.properties（由团队负责人分发，模板见 keystore.properties.example）
+//   - CI 构建：环境变量 DSH_KEYSTORE_BASE64 + DSH_KEYSTORE_PASSWORD（由 GitHub Secrets 注入）
+// 两者都缺失时终止配置（fail-closed），杜绝无团队密钥的构建产物流入设备。
+def loadTeamSigning() {
+    def propertiesFile = rootProject.file('keystore.properties')
+    if (propertiesFile.isFile()) {
+        def properties = new Properties()
+        propertiesFile.withInputStream { properties.load(it) }
+        def storeFile = rootProject.file(properties['storeFile'])
+        if (!storeFile.isFile()) {
+            throw new GradleException("团队密钥库缺失：${storeFile}，请向团队负责人获取后放入 android/keystore/ 目录")
+        }
+        return [
+            storeFile    : storeFile,
+            storePassword: properties['storePassword'],
+            keyAlias     : properties['keyAlias'],
+            keyPassword  : properties['keyPassword'],
+        ]
+    }
+    def encoded = System.getenv('DSH_KEYSTORE_BASE64')
+    def password = System.getenv('DSH_KEYSTORE_PASSWORD')
+    if (encoded != null && !encoded.isEmpty() && password != null && !password.isEmpty()) {
+        def decodedFile = layout.buildDirectory.file('keystore/dsh-mobile-team.jks').get().asFile
+        decodedFile.parentFile.mkdirs()
+        decodedFile.bytes = Base64.decoder.decode(encoded)
+        return [
+            storeFile    : decodedFile,
+            storePassword: password,
+            keyAlias     : 'dsh-mobile',
+            keyPassword  : password,
+        ]
+    }
+    throw new GradleException(
+        '缺少团队签名配置：请配置 android/keystore.properties（参照 keystore.properties.example），' +
+            '或提供 DSH_KEYSTORE_BASE64/DSH_KEYSTORE_PASSWORD 环境变量。禁止以个人密钥签名分发 APK。'
+    )
+}
+def teamSigning = loadTeamSigning()
+
+def appSourceRoot = rootProject.projectDir.parentFile.canonicalFile
+def legalAssetSources = [
+    'legal/LICENSE'                             : new File(appSourceRoot, 'LICENSE'),
+    'legal/THIRD_PARTY_NOTICES.md'              : new File(appSourceRoot, 'THIRD_PARTY_NOTICES.md'),
+    'legal/licenses/react-LICENSE.txt'           : new File(appSourceRoot, 'node_modules/react/LICENSE'),
+    'legal/licenses/react-dom-LICENSE.txt'       : new File(appSourceRoot, 'node_modules/react-dom/LICENSE'),
+    'legal/licenses/dsh-web-frontend-LICENSE.txt': new File(appSourceRoot, 'harness-web/node_modules/@deepseek-ai/dsh-web-frontend/LICENSE'),
+    'legal/licenses/capacitor-core-LICENSE.txt'  : new File(appSourceRoot, 'node_modules/@capacitor/core/LICENSE'),
+    'legal/licenses/capacitor-android-LICENSE.txt': new File(appSourceRoot, 'node_modules/@capacitor/android/LICENSE'),
+    'legal/licenses/xterm-LICENSE.txt'           : new File(appSourceRoot, 'node_modules/@xterm/xterm/LICENSE'),
+    'legal/licenses/xterm-addon-fit-LICENSE.txt' : new File(appSourceRoot, 'node_modules/@xterm/addon-fit/LICENSE'),
+    'legal/licenses/lucide-react-LICENSE.txt'    : new File(appSourceRoot, 'node_modules/lucide-react/LICENSE'),
+    'legal/licenses/proot-GPL-2.0.txt'            : new File(appSourceRoot, 'legal/licenses/proot-GPL-2.0.txt'),
+    'legal/licenses/operit2-AGPL-3.0.txt'         : new File(appSourceRoot, 'legal/licenses/operit2-AGPL-3.0.txt'),
+    'legal/licenses/operit-terminal-core-LGPL-3.0.txt': new File(appSourceRoot, 'legal/licenses/operit-terminal-core-LGPL-3.0.txt'),
+    'legal/licenses/gnu-LGPL-3.0.txt'              : new File(appSourceRoot, 'legal/licenses/gnu-LGPL-3.0.txt'),
+    'legal/licenses/gnu-GPL-3.0.txt'               : new File(appSourceRoot, 'legal/licenses/gnu-GPL-3.0.txt'),
+]
+def unavailableLegalAssetSources = legalAssetSources.findAll { _, source ->
+    !source.isFile() || !source.canRead() || source.length() == 0L
+}
+if (!unavailableLegalAssetSources.isEmpty()) {
+    def unavailablePaths = unavailableLegalAssetSources.values()
+        .collect { appSourceRoot.toPath().relativize(it.toPath()).toString().replace('\\', '/') }
+        .sort()
+        .join(', ')
+    throw new GradleException(
+        "Required APK legal material is missing, unreadable, or empty: ${unavailablePaths}. " +
+            'Install the pinned JavaScript dependencies before configuring the Android build.'
+    )
+}
+
+def generatedLegalAssetsDirectory = layout.buildDirectory.dir('generated/assets/legalBundle')
+def generateLegalAssets = tasks.register('generateLegalAssets', Sync) {
+    into(generatedLegalAssetsDirectory)
+    duplicatesStrategy = DuplicatesStrategy.FAIL
+    legalAssetSources.each { assetPath, source ->
+        def assetFile = new File(assetPath)
+        from(source) {
+            into(assetFile.parent.replace('\\', '/'))
+            rename { assetFile.name }
+        }
+    }
+}
+
+android {
+    namespace 'com.octacode.agent'
+    compileSdk 35
+
+    signingConfigs {
+        team {
+            storeFile teamSigning.storeFile
+            storePassword teamSigning.storePassword
+            keyAlias teamSigning.keyAlias
+            keyPassword teamSigning.keyPassword
+        }
+    }
+
+    defaultConfig {
+        applicationId 'com.octacode.agent'
+        minSdk 26
+        targetSdk 35
+        versionCode 22
+        versionName '0.2.0'
+
+        buildConfigField 'String', 'DEFAULT_MANIFEST_URL', envBuildValue('DSH_RUNTIME_MANIFEST_URL')
+        buildConfigField 'String', 'DEFAULT_MANIFEST_SHA256', envBuildValue('DSH_RUNTIME_MANIFEST_SHA256')
+
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+
+        externalNativeBuild {
+            cmake {
+                cppFlags ''
+                cFlags '-Wall -Wextra -Werror -Wconversion -Wshadow -fstack-protector-strong'
+            }
+        }
+
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+    }
+
+    buildFeatures {
+        aidl true
+        buildConfig true
+    }
+
+    sourceSets {
+        main {
+            assets.srcDir(generatedLegalAssetsDirectory)
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path file('src/main/cpp/CMakeLists.txt')
+            version '3.22.1'
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.team
+        }
+        release {
+            signingConfig signingConfigs.team
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_21
+        targetCompatibility JavaVersion.VERSION_21
+    }
+
+    kotlinOptions {
+        jvmTarget = '21'
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging true
+            keepDebugSymbols += ['**/libdsh_proot.so']
+        }
+        resources {
+            // Curated license texts are APK assets; these exclusions only resolve dependency META-INF collisions.
+            excludes += ['/META-INF/{AL2.0,LGPL2.1}', 'META-INF/DEPENDENCIES']
+        }
+    }
+
+    androidResources {
+        // The opaque suffix prevents AAPT from transparently expanding and renaming gzip assets.
+        noCompress += ['bundle']
+    }
+}
+
+tasks.named('preBuild').configure {
+    dependsOn(generateLegalAssets)
+}
+
+dependencies {
+    implementation project(':capacitor-android')
+    implementation 'androidx.activity:activity-ktx:1.10.1'
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'androidx.core:core-ktx:1.15.0'
+    implementation 'org.apache.commons:commons-compress:1.27.1'
+    implementation 'commons-io:commons-io:2.17.0'
+    implementation 'org.snakeyaml:snakeyaml-engine:2.9'
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    implementation 'dev.rikka.shizuku:api:13.1.5'
+    implementation 'dev.rikka.shizuku:provider:13.1.5'
+
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20240303'
+    androidTestImplementation 'androidx.test.ext:junit:1.2.1'
+    androidTestImplementation 'androidx.test.espresso:espresso-core:3.6.1'
+}
+
+if (file('capacitor.build.gradle').exists()) {
+    apply from: 'capacitor.build.gradle'
+}

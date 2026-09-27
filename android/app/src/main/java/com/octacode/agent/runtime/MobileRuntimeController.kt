@@ -1,0 +1,342 @@
+package com.octacode.agent.runtime
+
+import android.content.Context
+import com.octacode.agent.shizuku.ShizukuState
+import java.util.concurrent.locks.ReentrantLock
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.concurrent.withLock
+
+/**
+ * 本机运行时控制器。
+ *
+ * 实例由 [RuntimeHost] 持有：Capacitor 插件销毁（含划掉最近任务）后，前台服务可以
+ * 继续复用同一实例与会话；插件或服务都不再持有时才真正 [shutdown]。
+ *
+ * 事件出口通过 [RuntimeEventSink] 注入，运行时不直接引用 WebView，也不保存任何凭据。
+ */
+class MobileRuntimeController(
+    context: Context,
+    private val events: RuntimeEventSink,
+) {
+    private val lifecycleLock = ReentrantLock()
+    private val closed = AtomicBoolean(false)
+    /** 任务通知要 Context 才能投递；只保留 application context，不持有 Activity。 */
+    private val appContext = context.applicationContext
+    val store = RuntimeStore(context)
+    val status = RuntimeStatus(store).also { it.progressListener = events::onProgress }
+    private val installer = RuntimeInstaller(store, status, externalCancellation = closed::get)
+    private val agentInstaller = RuntimeAgentInstaller(store, status, externalCancellation = closed::get)
+    private val supervisor = RuntimeSupervisor(context, store, status)
+    private val plugins = RuntimePluginManager(context, store)
+    /** 自检实例与 store、生命周期锁同源：插件侧不自行构造 RuntimeStore。 */
+    private val selfCheck = RuntimeSelfCheck(context, store)
+    /** 版本列表只读清单与小文件；切换、删除仍由 installer 在安装锁内完成。 */
+    private val versions = RuntimeVersionCatalog(store)
+    val terminals = TerminalCoordinator(context, store, events::onTerminalOutput, events::onTerminalExit)
+
+    fun install(source: RuntimeSource) = lifecycleLock.withLock {
+        ensureOpen()
+        if (supervisor.isRunning() || terminals.hasRuntimeSessions()) {
+            throw RuntimeFailure("RUNTIME_BUSY", "请先停止 Harness 和 Ubuntu 终端")
+        }
+        // 判定必须在安装**之前**取：装完之后「本来有没有运行时」就无从分辨，
+        // 而它决定通知说「已安装」还是「已更新」（见 TaskNotificationPolicy.forInstallCompleted）。
+        val hadRuntimeBefore = store.installedManifest() != null
+        installer.install(source)
+        // 安装要下载并解压整个 rootfs（数百 MB），用户几乎必然切走：
+        // 装完只在界面上更新状态的话，他切回来之前什么都不知道。
+        TaskNotification.postInstallCompleted(
+            appContext,
+            TaskNotificationPolicy.forInstallCompleted(hadRuntimeBefore),
+        )
+    }
+
+    /**
+     * 按需 Agent 列表：清单声明 × 安装记录 × 落盘文件的合成绩效。
+     *
+     * 只读：不需要停止运行时；载荷只有名称、版本与两个布尔量，不含地址与摘要。
+     */
+    fun agentCliStates(): List<RuntimeAgentInstaller.AgentCliState> = lifecycleLock.withLock {
+        ensureOpen()
+        agentInstaller.states()
+    }
+
+    /**
+     * 下载并安装一个清单声明的 Agent。
+     *
+     * 与整包安装、版本切换同等对待：会改写当前运行时的 `opt/` 与 `usr/local/bin`，
+     * 因此必须先停掉 Harness 与终端，否则正在跑的访客进程会踩到被替换的文件。
+     */
+    fun installAgentCli(name: String): List<RuntimeAgentInstaller.AgentCliState> = lifecycleLock.withLock {
+        ensureOpen()
+        if (supervisor.isRunning() || terminals.hasRuntimeSessions()) {
+            throw RuntimeFailure("RUNTIME_BUSY", "请先停止 Harness 和 Ubuntu 终端")
+        }
+        agentInstaller.install(name) { !supervisor.isRunning() && !terminals.hasRuntimeSessions() }
+    }
+
+    /**
+     * 运行时版本列表：当前版本、保留下来的上一版本、APK 内置版本。
+     *
+     * 只读（清单与包内 `package.json`），因此**不要求**运行时已停止：用户正跑着 Harness 时
+     * 也能看到自己装的是什么版本。
+     */
+    fun runtimeVersions(): List<RuntimeVersionInfo> = lifecycleLock.withLock {
+        ensureOpen()
+        versions.list()
+    }
+
+    /**
+     * 切换到上一版本。
+     *
+     * 与安装同等对待：它会改名 `currentRoot` 并把用户数据搬过去，所以必须先停掉 Harness 与终端，
+     * 否则正在跑的访客进程会踩到被改名根目录。
+     */
+    fun switchRuntimeVersion(target: String): List<RuntimeVersionInfo> = lifecycleLock.withLock {
+        ensureOpen()
+        RuntimeVersionPolicy.requireTarget(target)
+        if (supervisor.isRunning() || terminals.hasRuntimeSessions()) {
+            throw RuntimeFailure("RUNTIME_BUSY", "请先停止 Harness 和 Ubuntu 终端")
+        }
+        installer.switchToRetained()
+        versions.list()
+    }
+
+    /**
+     * 删除保留下来的上一版本。
+     *
+     * 这里**不**要求运行时已停止：删除只动 `retained*`，与正在运行的当前运行时无关，
+     * 用户清理磁盘空间不该被迫先停服务。
+     */
+    fun deleteRuntimeVersion(target: String): List<RuntimeVersionInfo> = lifecycleLock.withLock {
+        ensureOpen()
+        RuntimeVersionPolicy.requireTarget(target)
+        installer.deleteRetained()
+        versions.list()
+    }
+
+    fun startHarness(): RuntimeStateSnapshot = lifecycleLock.withLock {        ensureOpen()
+        if (!supervisor.isRunning()) {
+            supervisor.preparePluginManagement()
+            plugins.recoverIfNeeded()
+            // 启动前自愈：运行时升级后插件目录里的链接可能已悬空，修复必须在插件被加载前完成。
+            plugins.repairInstalledIfNeeded()
+            // 启动前取证：自愈按代次指纹只跑一次，探测则每次都跑 —— 它只读、只遍历固定候选根，
+            // 而「装了新插件」不换代次，缓存会漏掉那个时机。
+            // 结果只写计数（MODULE_GRAPH）。判读要分清方向：**count=1 是很强的否定结论**
+            // （该故障与模块重复无关）；count>1 只说明「存在」两份物理副本 —— 可能只是 pnpm
+            // store 里已无引用的陈旧目录，**不等于**运行中的进程确实加载了两份。
+            plugins.recordModuleGraph()
+        }
+        supervisor.startHarness()
+    }
+
+    /** 权限：仅应用内部；生命周期锁防止插件写入与启动、安装、终端并发。 */
+    fun managePlugins(operation: String, id: String?, enabled: Boolean?, childId: String?): com.getcapacitor.JSObject = lifecycleLock.withLock {
+        ensureOpen()
+        if (operation != "list") {
+            if (supervisor.isRunning() || terminals.hasRuntimeSessions()) {
+                throw RuntimeFailure("RUNTIME_BUSY", "请先停止 Harness 和 Ubuntu 终端")
+            }
+            supervisor.preparePluginManagement()
+        }
+        plugins.run(operation, id, enabled, childId)
+    }
+
+    fun requestStartCancellation(): Boolean = supervisor.requestStartCancellation()
+
+    /**
+     * 权限：仅应用内部。
+     * 运行时自检：`check` 只读，`repair` 只补可执行位与创建附件目录。
+     *
+     * 与插件操作一致地持有生命周期锁：`repair` 会改文件系统，自检不得与安装、重置或
+     * Harness 启停并发；两个操作都要求运行时已安装（未安装由自检自己抛受控错误）。
+     */
+    fun runRuntimeSelfCheck(operation: String): com.getcapacitor.JSObject = lifecycleLock.withLock {
+        ensureOpen()
+        selfCheck.run(operation)
+    }
+
+    fun configureDeviceBridge(access: DeviceBridgeAccess) = lifecycleLock.withLock {
+        ensureOpen()
+        supervisor.configureDeviceBridge(access)
+    }
+
+    fun saveSettings(
+        settings: RuntimeSettings,
+        providerApiKeyUpdates: Map<ModelProvider, String>,
+        clearedProviderApiKeys: Set<ModelProvider>,
+        customProviders: List<CustomModelProvider>,
+        customProviderApiKeyUpdates: Map<String, String>,
+        clearedCustomProviderApiKeys: Set<String>,
+        overlayBallEnabledUpdate: Boolean? = settings.overlayBallEnabled,
+        harnessPermissionModeUpdate: HarnessPermissionMode? = settings.harnessPermissionMode,
+    ): RuntimeSettings = lifecycleLock.withLock {
+        ensureOpen()
+        val modelConfigurationChanged = providerApiKeyUpdates.isNotEmpty() || clearedProviderApiKeys.isNotEmpty() ||
+            customProviderApiKeyUpdates.isNotEmpty() || clearedCustomProviderApiKeys.isNotEmpty() ||
+            customProviders != store.settings().customModelProviders
+        val permissionChanged = harnessPermissionModeUpdate != null && harnessPermissionModeUpdate != store.harnessPermissionMode()
+        val launchConfigurationChanged = modelConfigurationChanged || permissionChanged
+        val restartHarness = launchConfigurationChanged && supervisor.isRunning()
+        if (launchConfigurationChanged) supervisor.stop()
+        val saved = store.saveSettings(
+            settings,
+            providerApiKeyUpdates,
+            clearedProviderApiKeys,
+            customProviders,
+            customProviderApiKeyUpdates,
+            clearedCustomProviderApiKeys,
+            overlayBallEnabledUpdate = overlayBallEnabledUpdate,
+            harnessPermissionModeUpdate = harnessPermissionModeUpdate,
+        )
+        if (restartHarness) supervisor.startHarness()
+        saved
+    }
+
+    fun stopRuntime(): RuntimeStateSnapshot {
+        supervisor.requestStartCancellation()
+        return lifecycleLock.withLock {
+            ensureOpen()
+            BestEffortCleanup.runAll(
+                { supervisor.stop() },
+                { terminals.closeAllAndWait() },
+            )
+            status.refreshIdle()
+        }
+    }
+
+    fun reset(confirmation: String?): RuntimeStateSnapshot {
+        ensureOpen()
+        if (confirmation != "RESET_RUNTIME") {
+            throw RuntimeFailure("RESET_CONFIRMATION_INVALID", "重置确认文本无效")
+        }
+        supervisor.requestStartCancellation()
+        return lifecycleLock.withLock {
+            ensureOpen()
+            BestEffortCleanup.runAll(
+                { supervisor.stop() },
+                { terminals.closeAllAndWait() },
+            )
+            installer.resetWorkspace()
+            status.snapshot()
+        }
+    }
+
+    fun createTerminal(kind: String, columns: Int, rows: Int): String = lifecycleLock.withLock {
+        ensureOpen()
+        terminals.create(kind, columns, rows)
+    }
+
+    fun writeTerminal(sessionId: String, dataBase64: String) = lifecycleLock.withLock {
+        ensureOpen()
+        terminals.write(sessionId, dataBase64)
+    }
+
+    fun resizeTerminal(sessionId: String, columns: Int, rows: Int) = lifecycleLock.withLock {
+        ensureOpen()
+        terminals.resize(sessionId, columns, rows)
+    }
+
+    fun closeTerminal(sessionId: String) = lifecycleLock.withLock {
+        ensureOpen()
+        terminals.closeAndWait(sessionId)
+    }
+
+    fun hasDeviceSession(sessionId: String): Boolean = lifecycleLock.withLock {
+        ensureOpen()
+        terminals.shizuku.contains(sessionId)
+    }
+
+    fun requestShizukuPermission(): ShizukuState = lifecycleLock.withLock {
+        ensureOpen()
+        terminals.shizuku.requestPermission()
+    }
+
+    fun connectShizuku(): ShizukuState = lifecycleLock.withLock {
+        ensureOpen()
+        // 授权已存在时直接绑定 Shizuku UserService；未授权时
+        // ShizukuRuntime.connect() 会在 requirePermission() 中拒绝（fail-closed）。
+        terminals.shizuku.connect()
+    }
+
+    fun openShizukuManager() = lifecycleLock.withLock {
+        ensureOpen()
+        terminals.shizuku.openManager()
+    }
+
+    fun openHarnessAccess(): HarnessAccess = lifecycleLock.withLock {
+        ensureOpen()
+        supervisor.access()
+    }
+
+    fun state(): RuntimeStateSnapshot = status.snapshot()
+    fun shizukuState(): ShizukuState = lifecycleLock.withLock {
+        ensureOpen()
+        terminals.shizuku.state()
+    }
+
+    /**
+     * 是否存在本进程无法复用的 Harness 残留进程。
+     * 应用进程被系统回收后 PRoot→node 子进程可能仍在运行，但临时 Basic Auth 凭据
+     * 已随进程丢失，只能提示用户重新连接。
+     */
+    fun hasResidualHarness(): Boolean = try {
+        supervisor.hasResidualHarness()
+    } catch (_: Throwable) {
+        // 判定失败按“无残留”处理：不额外弹提示，启动流程仍会自行回收残留。
+        false
+    }
+
+    /**
+     * 后台保持与恢复状态快照。
+     *
+     * 只读取设置、Shizuku 状态、残留进程标记与持久化意图；不启动进程、不执行 Shell
+     * 命令、不返回任何凭据，可安全回传 WebView。
+     */
+    fun keepAliveSnapshot(foregroundServiceActive: Boolean): RuntimeKeepAliveSnapshot = lifecycleLock.withLock {
+        ensureOpen()
+        val record = store.runtimeIntentRecord()
+        val ownedRunning = status.snapshot().phase == RuntimePhase.RUNNING
+        RuntimeKeepAliveSnapshot(
+            keepRuntimeInBackground = store.keepRuntimeInBackground(),
+            foregroundServiceActive = foregroundServiceActive,
+            deviceShellReady = deviceShellReadyLocked(),
+            reconnectRequired = HarnessKeepAlivePolicy.requiresReconnect(
+                runtimeOwnedRunning = ownedRunning,
+                residualProcess = hasResidualHarness(),
+                lastIntent = record.intent,
+            ),
+            lastIntent = record.intent,
+            lastPhase = record.phase,
+            lastUpdatedAtMillis = record.updatedAtMillis,
+        )
+    }
+
+    /**
+     * Shizuku 健康检查：只读取 binder、授权与 UserService 状态，不执行任何 Shell 命令
+     * 与设备操作。Shizuku 未安装、未授权或断开时返回 false，运行时按无设备 Shell 降级。
+     */
+    private fun deviceShellReadyLocked(): Boolean = try {
+        val state = terminals.shizuku.healthCheck()
+        state.installed && state.running && state.permission == "granted"
+    } catch (_: Throwable) {
+        false
+    }
+
+    fun shutdown() {
+        if (!closed.compareAndSet(false, true)) return
+        installer.cancelInstall()
+        supervisor.requestStartCancellation()
+        lifecycleLock.withLock {
+            BestEffortCleanup.runAll(
+                { supervisor.stop() },
+                { terminals.shutdown() },
+            )
+        }
+    }
+
+    private fun ensureOpen() {
+        if (closed.get()) throw RuntimeFailure("RUNTIME_CLOSED", "本机运行时正在关闭")
+    }
+}

@@ -1,0 +1,586 @@
+name: Android CI (build + verify)
+
+on:
+  push:
+    branches: [main, 'feature/dsh-plugin-compat']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'Release type: preview (default) or stable'
+        required: false
+        default: 'preview'
+        type: choice
+        options:
+          - preview
+          - stable
+
+permissions:
+  contents: read
+
+env:
+  # 应用版本号：与 android/app/build.gradle 的 versionName 保持一致。
+  # CI 据此生成运行时版本与 Release 标签：预发布走 v<版本>-mobile-<run_number>，
+  # 正式版（release_type=stable）直接用 v<版本>。本次为首个正式版，故去掉 -preview 后缀。
+  APP_VERSION: '0.2.0'
+
+jobs:
+  build:
+    needs: [build-runners, build-rootfs]
+    runs-on: ubuntu-latest
+    env:
+      # 团队统一签名：密钥库与密码经 GitHub Secrets 注入（base64 编码的 dsh-mobile-team.jks）
+      DSH_KEYSTORE_BASE64: ${{ secrets.DSH_KEYSTORE_BASE64 }}
+      DSH_KEYSTORE_PASSWORD: ${{ secrets.DSH_KEYSTORE_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Node.js 24.14.0
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24.14.0'
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        # 版本唯一来源为 package.json 的 packageManager 字段，避免双重指定冲突
+
+      - name: Set up JDK (pinned by README)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '23.0.1'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          # 不写 packages 时该 action 默认装 "tools platform-tools"，而 Google 已从
+          # SDK 源移除 tools 包，sdkmanager 会以 "Failed to find package 'tools'" 失败。
+          # 这里只装 platform-tools，platforms/build-tools/cmake/ndk 由下一步显式安装。
+          packages: 'platform-tools'
+
+      - name: Install SDK components
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0" "cmake;3.22.1" "ndk;27.1.12297006"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/pnpm/store
+          key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build web bundle (tsc + vite)
+        run: pnpm run build
+
+      - name: Unit tests (vitest)
+        run: pnpm test
+
+      - name: Official Harness frontend adapter tests
+        run: pnpm --dir harness-web test
+
+      - name: Install Shizuku plugin contract dependencies
+        # Contract tests import the real plugin from its separate runtime workspace.
+        # Native build scripts run in the ARM64 rootfs job.
+        run: pnpm --dir scripts/runtime-profile install --frozen-lockfile --ignore-scripts
+
+      - name: Script tests (node --test)
+        run: pnpm run test:scripts
+
+      - name: Runtime packaging self-check
+        run: python3 scripts/build-embedded-runtime.selfcheck.py
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Capacitor sync
+        run: pnpm run android:sync
+
+      - name: Download PRoot runners (built by the toolchain job)
+        uses: actions/download-artifact@v4
+        with:
+          name: proot-runners-arm64
+          path: android/app/src/main/jniLibs/arm64-v8a
+
+      - name: Verify runner placement
+        run: ls -la android/app/src/main/jniLibs/arm64-v8a
+
+      - name: Download embedded runtime bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: embedded-runtime
+          path: /tmp/embedded-runtime
+
+      - name: Embed bundled runtime into APK (offline install)
+        run: |
+          set -euo pipefail
+          BUNDLE="$(find /tmp/embedded-runtime -type f -name rootfs.bundle -print -quit)"
+          MANIFEST="$(find /tmp/embedded-runtime -type f -name runtime-manifest.json -print -quit)"
+          test -n "$BUNDLE" && test -f "$BUNDLE"
+          test -n "$MANIFEST" && test -f "$MANIFEST"
+          mkdir -p android/app/src/main/assets/runtime
+          cp "$BUNDLE" android/app/src/main/assets/runtime/rootfs.bundle
+          cp "$MANIFEST" android/app/src/main/assets/runtime/runtime-manifest.json
+          # 不注入 DSH_RUNTIME_MANIFEST_URL/SHA256：BuildConfig 为空时 App 走内置资产
+          # （RuntimeSource(null, null) -> isBundled），无需联网下载，中国网络可离线安装。
+          ls -la android/app/src/main/assets/runtime/
+          echo "Embedded rootfs bytes: $(stat -c%s android/app/src/main/assets/runtime/rootfs.bundle)"
+
+      - name: Download runtime legal notices (Ubuntu package copyrights)
+        # 与运行时同一次构建收集的法律材料：先落到 /tmp，再由下一步铺进 APK 资产目录
+        # （assets 默认源集下的目录，无需改动 Gradle 的手工登记表）。
+        uses: actions/download-artifact@v4
+        with:
+          name: runtime-legal
+          path: /tmp/runtime-legal
+
+      - name: Install runtime legal notices into the APK assets
+        run: |
+          set -euo pipefail
+          DEST=android/app/src/main/assets/legal/ubuntu-packages
+          SRC=/tmp/runtime-legal
+          test -d "$SRC"
+          # upload-artifact 对单一目录的上传根随版本可能是该目录本身或它的父目录，
+          # 两种布局都接受，避免因为下载布局变化把法律材料静默漏在 APK 之外。
+          if [ -d "$SRC/ubuntu-packages" ] && [ ! -f "$SRC/inventory.json" ]; then
+            SRC="$SRC/ubuntu-packages"
+          fi
+          mkdir -p "$DEST"
+          cp -a "$SRC"/. "$DEST"/
+          ls -la "$DEST"
+
+      - name: Verify APK legal material for the network tool components
+        # 发版门禁：git / curl / libcurl / libexpat1 / ca-certificates 的发行版版权文件
+        # 必须齐备，且 GPL-2.0 未删节全文在位；缺一件即失败（fail-closed）。
+        run: |
+          set -euo pipefail
+          python3 scripts/legal-notices.py verify \
+            --dest android/app/src/main/assets/legal/ubuntu-packages
+          find android/app/src/main/assets/legal -maxdepth 2 -type f | sort
+
+      - name: Set up Gradle (trusted distribution for wrapper bootstrap)
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.11.1
+
+      - name: Generate Gradle wrapper (supply-chain bootstrap)
+        working-directory: .wrapper-bootstrap
+        run: gradle wrapper --no-daemon
+
+      - name: Install wrapper jar into android project
+        run: cp .wrapper-bootstrap/gradle/wrapper/gradle-wrapper.jar android/gradle/wrapper/gradle-wrapper.jar
+
+      - name: Build release APK + lint + unit tests
+        working-directory: android
+        run: ./gradlew assembleRelease lintRelease testDebugUnitTest --no-daemon
+
+      - name: 校验 APK 团队签名（证书指纹与团队密钥库一致）
+        run: python3 scripts/verify-apk-signature.py --apk android/app/build/outputs/apk/release/app-release.apk
+
+      - name: Upload release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-harness-android-release
+          path: android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+
+  build-runners:
+    name: Build PRoot runners (Operit2 toolchain, arm64-v8a)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Checkout Operit2 at the pinned runtime toolchain commit
+        uses: actions/checkout@v4
+        with:
+          repository: AAswordman/Operit2
+          ref: dc4c3a9405dc7ed3ef69b2ac9a6ace65374d77cf
+          path: operit2
+
+      - name: Download pinned sources (busybox / termux-proot / talloc / bash)
+        working-directory: operit2/tools/android-runtime
+        run: |
+          set -euo pipefail
+          mkdir -p downloads sources
+          fetch() {
+            local name="$1" url="$2" archive="$3" sha="$4"
+            echo "downloading $name"
+            curl -fL --retry 3 -o "downloads/$archive" "$url"
+            echo "$sha  downloads/$archive" | sha256sum -c -
+            tar -xf "downloads/$archive" -C sources
+          }
+          fetch busybox https://busybox.net/downloads/busybox-1.38.0.tar.bz2 busybox-1.38.0.tar.bz2 34f9ea6ff8636f2c9241153b9114eefa9e65674a45318ae1ef95bb5f31c53bb2
+          fetch proot https://github.com/termux/proot/archive/refs/tags/v5.1.107.78.tar.gz termux-proot-v5.1.107.78.tar.gz f3377ba49dcd833370420c34c5081b4c243ecbb85b2a9881a4f4586012599afa
+          fetch talloc https://www.samba.org/ftp/talloc/talloc-2.4.3.tar.gz talloc-2.4.3.tar.gz dc46c40b9f46bb34dd97fe41f548b0e8b247b77a918576733c528e83abd854dd
+          fetch bash https://ftp.gnu.org/gnu/bash/bash-5.2.37.tar.gz bash-5.2.37.tar.gz 9599b22ecd1d5787ad7d3b7bf0c59f312b3396d1e281175dd1f8a4014da621ff
+
+      - name: Install NDK r29-beta4
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.cache/operit-android-runtime"
+          curl -fL --retry 3 -o /tmp/ndk.zip https://dl.google.com/android/repository/android-ndk-r29-beta4-linux.zip
+          echo "c5db6031a549b5274eed920c45ee3c7da1ac3f1f416cbb512dd9d88417bdf009  /tmp/ndk.zip" | sha256sum -c -
+          unzip -q /tmp/ndk.zip -d "$HOME/.cache/operit-android-runtime"
+
+      - name: Build PRoot (arm64-v8a)
+        working-directory: operit2
+        run: |
+          export ANDROID_NDK_HOME="$HOME/.cache/operit-android-runtime/android-ndk-r29-beta4"
+          export OPERIT_ANDROID_RUNTIME_ABIS="arm64-v8a"
+          export OPERIT_ANDROID_RUNTIME_COMPONENTS="proot"
+          bash tools/android-runtime/build_android_tools_wsl.sh
+
+      - name: Collect runners (renamed to dsh names)
+        run: |
+          mkdir -p runners
+          cp operit2/apps/flutter/app/android/app/src/main/jniLibs/arm64-v8a/liboperit_proot.so runners/libdsh_proot.so
+          cp operit2/apps/flutter/app/android/app/src/main/jniLibs/arm64-v8a/liboperit_loader.so runners/libdsh_proot_loader.so
+          sha256sum runners/*
+
+      - name: Upload runners
+        uses: actions/upload-artifact@v4
+        with:
+          name: proot-runners-arm64
+          path: runners/*.so
+          if-no-files-found: error
+
+  build-rootfs:
+    name: Build embedded runtime bundle (Ubuntu 24.04 ARM64 + Node 24.19 + dsh)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Node 24.14.0 (arm64)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24.14.0'
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Build Android-adapted official Harness frontend
+        run: |
+          pnpm install --frozen-lockfile --filter @dsh-mobile/harness-web...
+          pnpm --dir harness-web build
+
+      - name: Prepare dsh runtime for linux/arm64 (compile node-pty from source)
+        run: |
+          set -x
+          set -o pipefail
+          mkdir -p /tmp/dsh-root
+          cp scripts/runtime-profile/package.json scripts/runtime-profile/pnpm-lock.yaml \
+            scripts/runtime-profile/pnpm-workspace.yaml /tmp/dsh-root/
+          cp -R scripts/runtime-profile/plugins /tmp/dsh-root/
+          cp -R scripts/runtime-profile/patches /tmp/dsh-root/
+          cd /tmp/dsh-root
+          set +e
+          (
+            set -e
+            pnpm install --frozen-lockfile
+            # 兜底：显式强制编译 node-pty，不依赖 allowBuilds 是否被解析
+            pnpm rebuild node-pty || true
+            mapfile -t PTP_DIRS < <(
+              find node_modules/.pnpm -mindepth 1 -maxdepth 1 -type d -name 'node-pty@*' -print | LC_ALL=C sort
+            )
+            if [ "${#PTP_DIRS[@]}" -ne 1 ]; then
+              echo "expected exactly one node-pty package, found ${#PTP_DIRS[@]}" >&2
+              exit 1
+            fi
+            PTP="${PTP_DIRS[0]}/node_modules/node-pty"
+            echo "=== pty 包路径探测 ==="
+            printf '%s\n' "${PTP_DIRS[@]}"
+            echo "=== build 目录内容 ==="
+            if [ -d "$PTP/build" ]; then
+              find "$PTP/build" -maxdepth 2 -type f -print | sed -n '1,30p'
+            fi
+            mkdir -p "$PTP/prebuilds/linux-arm64"
+            if [ ! -s "$PTP/prebuilds/linux-arm64/pty.node" ]; then
+              test -s "$PTP/build/Release/pty.node"
+              cp "$PTP/build/Release/pty.node" "$PTP/prebuilds/linux-arm64/pty.node"
+            fi
+            if [ -s "$PTP/build/Release/spawn-helper" ] && [ ! -e "$PTP/prebuilds/linux-arm64/spawn-helper" ]; then
+              cp "$PTP/build/Release/spawn-helper" "$PTP/prebuilds/linux-arm64/spawn-helper"
+            fi
+            chmod +x "$PTP/prebuilds/linux-arm64/spawn-helper" 2>/dev/null || true
+            test -s "$PTP/prebuilds/linux-arm64/pty.node"
+            ls -la "$PTP/prebuilds/linux-arm64/"
+          ) 2>&1 | tee /tmp/step.log
+          STATUS="$?"
+          set -e
+          if [ "$STATUS" != "0" ]; then exit 1; fi
+
+      - name: Check mobile adaptation anchors in the runtime plugin tree
+        run: node harness-web/scripts/check-runtime-anchors.mjs /tmp/dsh-root/node_modules
+
+      - name: Download pinned rootfs inputs
+        run: |
+          curl -fL --retry 3 -o /tmp/ubuntu.tar.gz https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.4-base-arm64.tar.gz
+          curl -fL --retry 3 -o /tmp/node.tar.xz https://nodejs.org/dist/v24.19.0/node-v24.19.0-linux-arm64.tar.xz
+          echo "04207713ece899c3740823d33690441ad3a7f0ded1101aca744e2b0f37ac7ff2  /tmp/ubuntu.tar.gz" | sha256sum -c -
+          echo "01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc  /tmp/node.tar.xz" | sha256sum -c -
+
+      - name: Install toolchain (python standalone + apt static/dynamic binaries)
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/toolchain/bin /tmp/toolchain/python
+          # python-build-standalone（aarch64，自包含；版本号以 20250712 release 实资产为准）
+          curl -fL --retry 3 -o /tmp/py.tgz https://github.com/astral-sh/python-build-standalone/releases/download/20250712/cpython-3.13.5%2B20250712-aarch64-unknown-linux-gnu-install_only.tar.gz
+          echo "d3b6805d8a12610d45917aa5cac69f53f8dd1ee3faef86fc8d2d1488825edd9a  /tmp/py.tgz" | sha256sum -c -
+          tar -xzf /tmp/py.tgz -C /tmp/toolchain/python --strip-components=1
+          # 从 runner（ubuntu-24.04-arm，与 rootfs 同发行版）取工具：
+          # busybox-static 为静态链接；jq/unzip 动态依赖（glibc/libm 等）rootfs 已含
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends busybox-static jq unzip
+          cp /bin/busybox /tmp/toolchain/bin/busybox
+          cp "$(command -v jq)" /tmp/toolchain/bin/jq
+          cp "$(command -v unzip)" /tmp/toolchain/bin/unzip
+          /tmp/toolchain/bin/busybox >/dev/null 2>&1 || true   # 避免 SIGPIPE 触发 pipefail
+          /tmp/toolchain/bin/jq --version
+          ls /tmp/toolchain/python/bin | head -5
+
+      - name: Stage network tool component (git / curl / CA / openssh-client)
+        # 访客里原本没有 git，也没有 curl 与 CA 证书：编码 Agent 无法 clone/diff/commit。
+        # 组件在**同发行版同架构**的 runner 上取（apt 只跑在 runner 上，不跑在镜像里），
+        # 由脚本按 rootfs 路径预置；/usr/lib/git-core 的硬链接必须保留，否则体积会失控。
+        run: |
+          set -euo pipefail
+          bash scripts/stage-network-tools.sh /tmp/network-tools /tmp/ubuntu.tar.gz /tmp/network-tools-packages.txt
+          head -20 /tmp/network-tools-packages.txt
+
+      - name: Stage compiler component (gcc / g++ / make / headers)
+        # 访客里原本没有编译器：原生模块、C/C++ 构建一律不可做。
+        # 与网络组件同一模式（同发行版同架构 runner 上 apt 取包，按 rootfs 路径预置），
+        # 独立脚本、独立体积配额；Go / Rust / JDK 不在这里，走按需 toolpack。
+        run: |
+          set -euo pipefail
+          bash scripts/stage-build-tools.sh /tmp/build-tools /tmp/ubuntu.tar.gz /tmp/build-tools-packages.txt
+          head -20 /tmp/build-tools-packages.txt
+
+      - name: Collect Ubuntu package copyright notices for the APK legal bundle
+        # 新组件的法律材料：由 CI 从 runner 的 /usr/share/doc/<pkg>/copyright 收集，
+        # 落到 APK 的 assets/legal/ubuntu-packages/（与既有 legal 机制同一套资产目录）。
+        # 必需组件的版权文件缺失时 collect 会直接失败，不会静默发出没有许可证原文的包。
+        # 两个预置脚本各写一份包清单，在此合并去重后统一收集。
+        run: |
+          set -euo pipefail
+          cat /tmp/network-tools-packages.txt /tmp/build-tools-packages.txt | LC_ALL=C sort -u > /tmp/all-staged-packages.txt
+          python3 scripts/legal-notices.py collect \
+            --dest android/app/src/main/assets/legal/ubuntu-packages \
+            --packages /tmp/all-staged-packages.txt
+          ls -la android/app/src/main/assets/legal/ubuntu-packages/
+
+      - name: Upload legal notices (Ubuntu package copyrights)
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-legal
+          path: android/app/src/main/assets/legal/ubuntu-packages/
+          if-no-files-found: error
+
+      - name: Build bundle + manifest (mobile profile)
+        run: |
+          set -o pipefail
+          set +e
+          (
+            set -e
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.release_type }}" = "stable" ]; then
+              RUNTIME_VERSION="${APP_VERSION}"
+              RELEASE_TAG="v${APP_VERSION}"
+            else
+              RUNTIME_VERSION="${APP_VERSION}-mobile-${GITHUB_RUN_NUMBER}"
+              RELEASE_TAG="v${RUNTIME_VERSION}"
+            fi
+            python3 scripts/build-embedded-runtime.py \
+              --ubuntu /tmp/ubuntu.tar.gz --ubuntu-sha256 04207713ece899c3740823d33690441ad3a7f0ded1101aca744e2b0f37ac7ff2 \
+              --node /tmp/node.tar.xz --node-sha256 01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc \
+              --dsh-root /tmp/dsh-root --toolchain-dir /tmp/toolchain --runtime-version "${RUNTIME_VERSION}" \
+              --network-tools-dir /tmp/network-tools \
+              --build-tools-dir /tmp/build-tools \
+              --rootfs-url "https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}/rootfs.bundle" \
+              --mobile-profile scripts/mobile-profile.example.json \
+              --output /tmp/rootfs.bundle --manifest /tmp/runtime-manifest.json
+            python3 scripts/rebuild-rootfs-frontend.py \
+              --bundle /tmp/rootfs.bundle \
+              --manifest /tmp/runtime-manifest.json \
+              --dist harness-web/dist \
+              --runtime-version "${RUNTIME_VERSION}"
+            ls -la /tmp/rootfs.bundle /tmp/runtime-manifest.json
+            sha256sum /tmp/rootfs.bundle
+            python3 scripts/verify-bundle.py --bundle /tmp/rootfs.bundle --manifest /tmp/runtime-manifest.json
+            mkdir -p runtime-artifacts
+            cp /tmp/rootfs.bundle /tmp/runtime-manifest.json runtime-artifacts/
+          ) 2>&1 | tee /tmp/bundle.log
+          STATUS="$?"
+          set -e
+          if [ "$STATUS" != "0" ]; then
+            echo "=== bundle step failed, see /tmp/bundle.log (folded into verify log) ==="
+            cat /tmp/bundle.log
+            exit 1
+          fi
+
+      - name: Verify runtime artifacts before upload
+        run: |
+          {
+            pwd
+            echo "=== node-pty step output ==="
+            cat /tmp/step.log 2>/dev/null || echo "(无 step.log)"
+            echo "=== dsh-root 探测 ==="
+            ls -la /tmp/dsh-root/node_modules/@deepseek-ai/dsh/lib/bin.js 2>/dev/null || echo "(dsh bin.js 缺失)"
+            find /tmp/dsh-root/node_modules/.pnpm -path '*/node-pty/prebuilds/linux-arm64/pty.node' -ls 2>/dev/null || echo "(pty 目录缺失)"
+            echo "=== dsh-tools 物理副本清单（符号链接不会被 find 跟随，只列包本体） ==="
+            find /tmp/dsh-root/node_modules/.pnpm \
+              -path '*/node_modules/@deepseek-ai/dsh-tools/package.json' -print 2>/dev/null \
+              || echo "(未找到 dsh-tools)"
+            echo "=== bundle step output ==="
+            cat /tmp/bundle.log 2>/dev/null || echo "(无 bundle.log)"
+            echo "=== runtime-artifacts ==="
+            ls -la runtime-artifacts/ || true
+            du -sh runtime-artifacts/ 2>/dev/null || true
+          } 2>&1 | tee /tmp/verify.log
+          if [ ! -f runtime-artifacts/rootfs.bundle ] || [ ! -f runtime-artifacts/runtime-manifest.json ]; then
+            echo "runtime artifacts are missing; inspect this Actions step output" >&2
+            exit 1
+          fi
+          # 致命断言：dsh 全家桶必须各自只有一份物理副本。
+          # 两份副本 = 两个 Symbol 实例 → cordis 注册表取不到服务 → 所有工具调用
+          # 在 '.prepare' 上抛 "Cannot read properties of undefined"。
+          # 这里刻意不做成 advisory：重复副本必须拦住上传，不能只打日志。
+          node scripts/check-runtime-dedupe.mjs --list /tmp/dsh-root
+
+      - name: Upload runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: embedded-runtime
+          path: |
+            runtime-artifacts/rootfs.bundle
+            runtime-artifacts/runtime-manifest.json
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish release (APK + rootfs bundle + manifest)
+    needs: [build, build-rootfs]
+    permissions:
+      contents: write
+    # 推送分支只做构建与验证；发布必须手动 workflow_dispatch 并选择 release_type
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.release_type != '' && (github.event.inputs.release_type != 'stable' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    steps:
+      # 需要完整历史与标签：Release 说明里的「变更内容」由上一个发布标签到本次提交的
+      # 提交列表生成，浅克隆既没有历史也没有标签。
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Download APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dsh-harness-android-release
+          path: /tmp/apk
+
+      - name: Download runtime artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: embedded-runtime
+          path: /tmp/runtime
+
+      - name: Create release with assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Never enable xtrace here: the Authorization header must not appear
+          # in the Actions log.
+          set +x
+          set -o pipefail
+          set +e
+          cd "$GITHUB_WORKSPACE"
+          (
+            set -e
+            RELEASE_TYPE="${{ github.event.inputs.release_type }}"
+            if [ "$RELEASE_TYPE" = "stable" ]; then
+              TAG="v${APP_VERSION}"
+              NAME="DeepSeek Harness Android v${APP_VERSION}（正式版）"
+              PRE="false"
+            else
+              TAG="v${APP_VERSION}-mobile-${{ github.run_number }}"
+              NAME="Mobile test build #${{ github.run_number }}"
+              PRE="true"
+            fi
+            APK="$(ls /tmp/apk/*.apk | head -n1)"
+            test -n "$APK"
+            test -f /tmp/runtime/rootfs.bundle
+            test -f /tmp/runtime/runtime-manifest.json
+            MANIFEST_SHA="$(sha256sum /tmp/runtime/runtime-manifest.json | cut -d' ' -f1)"
+            # 变更内容：上一个发布标签到本次提交的合并提交列表。
+            # 每次升版本号都必须能说清"这一版更新了什么"，因此这里由 CI 自动生成，
+            # 不依赖人工在 Release 页面补写。
+            PREV_TAG="$(git tag --list 'v*' --sort=-creatordate | head -n1 || true)"
+            if [ -n "$PREV_TAG" ]; then
+              RANGE="${PREV_TAG}..${GITHUB_SHA}"
+            else
+              RANGE="${GITHUB_SHA}"
+            fi
+            CHANGES="$(git log --no-merges --pretty=format:'- %s' "$RANGE" 2>/dev/null | head -n 40 || true)"
+            if [ -z "$CHANGES" ]; then
+              CHANGES="- （本次没有可列出的提交，可能是重新发布同一提交）"
+            fi
+            if [ -n "$PREV_TAG" ]; then
+              CHANGES_HEADER="上一个版本：${PREV_TAG}"
+            else
+              CHANGES_HEADER="（未找到上一个发布标签）"
+            fi
+            for f in "$APK" /tmp/runtime/rootfs.bundle /tmp/runtime/runtime-manifest.json; do
+              printf '%s  %s\n' "$(sha256sum "$f" | cut -d' ' -f1)" "$(basename "$f")"
+            done > /tmp/checksums.txt
+            cat > /tmp/notes.md <<EOF
+          # ${NAME}
+
+          ## 变更内容
+
+          ${CHANGES_HEADER}
+
+          ${CHANGES}
+
+          ## 安装与配置
+
+          1. 安装 $(basename "$APK")（离线 APK，已内置 PRoot 运行器 + Ubuntu rootfs）。
+          2. 首次打开后点「安装并进入对话」；rootfs 从 APK 内置资产解压，无需联网下载。
+          3. 断网也能安装；若提示「未内置运行时」请确认下载的是本 Release 的 APK。
+
+          ## 资产
+
+          - $(basename "$APK")（APK，含 PRoot 运行器）
+          - rootfs.bundle（Ubuntu 24.04 ARM64 + Node 24.19 + dsh 0.1.5-rc.2 + 官方 Harness 前端 Android 适配）
+          - runtime-manifest.json
+          - checksums.txt（以上三项资产的 SHA-256）
+
+          runtime-manifest.json SHA-256：${MANIFEST_SHA}
+          EOF
+            RESP="$(curl -sS -f -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              https://api.github.com/repos/${{ github.repository }}/releases \
+              -d "$(jq -n --arg t "$TAG" --arg n "$NAME" --arg pre "$PRE" --arg sha "$GITHUB_SHA" --rawfile b /tmp/notes.md '{tag_name:$t, target_commitish:$sha, name:$n, body:$b, draft:false, prerelease:($pre=="true")}')")"
+            RELEASE_ID="$(echo "$RESP" | jq -r .id)"
+            test -n "$RELEASE_ID" && test "$RELEASE_ID" != "null"
+            UPLOAD_BASE="https://uploads.github.com/repos/${{ github.repository }}/releases/${RELEASE_ID}/assets"
+            for f in "$APK" /tmp/runtime/rootfs.bundle /tmp/runtime/runtime-manifest.json /tmp/checksums.txt; do
+              name="$(basename "$f")"
+              curl -sS -f -X POST \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Content-Type: application/octet-stream" \
+                --data-binary "@$f" \
+                "${UPLOAD_BASE}?name=${name}" >/dev/null
+            done
+            echo "RELEASE_URL=https://github.com/${{ github.repository }}/releases/tag/${TAG}"
+          ) 2>&1 | tee /tmp/release.log
+          STATUS="$?"
+          set -e
+          if [ "$STATUS" != "0" ]; then exit 1; fi

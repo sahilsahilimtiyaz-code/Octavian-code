@@ -1,0 +1,2 @@
+-keep class com.octacode.agent.shizuku.DeviceShellUserService { *; }
+-keep class com.octacode.agent.shizuku.** extends android.os.Binder { *; }

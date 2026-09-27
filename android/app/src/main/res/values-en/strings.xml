@@ -1,0 +1,49 @@
+<resources>
+    <string name="app_name">DeepSeek Harness</string>
+    <string name="harness_title">Harness chat</string>
+    <string name="harness_back_to_app">Back to app</string>
+    <string name="harness_open_management">Open app settings</string>
+    <string name="harness_workspace_files">Workspace files</string>
+    <string name="harness_workspace_empty">No files are available in the workspace</string>
+    <string name="harness_file_open">Open with</string>
+    <string name="harness_file_share">Share</string>
+    <string name="harness_file_delete">Delete</string>
+    <string name="harness_file_delete_confirm">Delete “%1$s”? This cannot be undone.</string>
+    <string name="harness_file_deleted">File deleted</string>
+    <string name="harness_file_action_failed">File operation failed</string>
+    <string name="harness_session_failed">Unable to establish a local Harness session</string>
+    <string name="harness_page_failed">Unable to open Harness. Please retry in Settings.</string>
+    <string name="shizuku_missing">Install and start Shizuku first</string>
+    <!-- Background keep-alive foreground service notification: static text with no URL, credential, terminal output, or user data. -->
+    <string name="keep_alive_channel_name">Background run</string>
+    <string name="keep_alive_channel_description">Keeps the local Harness runtime running in the background</string>
+    <string name="keep_alive_notification_title">Harness is running in the background</string>
+    <string name="keep_alive_notification_text">Tap to return to the app and manage the runtime</string>
+    <!-- Diagnostic log export: static share sheet text with no file path or log content. -->
+    <string name="diagnostic_share_title">Export diagnostic log</string>
+    <string name="diagnostic_share_subject">DeepSeek Harness diagnostic log</string>
+    <!-- Floating ball. Fixed copy: no URL, port, credential, or session content. -->
+    <!-- Screen-reader name for the ball itself: a noun phrase, not the status-sentence notification title below. -->
+    <string name="overlay_ball_content_description">Floating ball</string>
+    <string name="overlay_ball_channel_name">Floating ball</string>
+    <string name="overlay_ball_channel_description">Shows a floating ball above other apps; tap to return to the Harness conversation</string>
+    <string name="overlay_ball_notification_title">Floating ball is on</string>
+    <string name="overlay_ball_notification_text">Tap to return to the Harness conversation</string>
+    <string name="overlay_ball_menu_return">Return to app</string>
+    <string name="overlay_ball_menu_hide">Hide floating ball</string>
+
+    <string name="task_notification_channel_name">Runtime status</string>
+    <string name="task_notification_channel_description">Alerts you when the local Harness stops or fails to start</string>
+    <string name="task_notification_stopped_title">Harness stopped</string>
+    <string name="task_notification_stopped_text">The local runtime exited on its own. Tap to return to the app.</string>
+    <string name="task_notification_failed_title">Harness failed to start</string>
+    <string name="task_notification_failed_text">The runtime exited during startup. Tap to return to the app and see why.</string>
+    <string name="task_notification_installed_title">Runtime installed</string>
+    <string name="task_notification_installed_text">Tap to return to the app and open Harness</string>
+    <string name="task_notification_updated_title">Runtime updated</string>
+    <string name="task_notification_updated_text">Your data was kept. Tap to return to the app.</string>
+    <string name="task_notification_exported_title">Workspace exported</string>
+    <string name="task_notification_exported_text">Wrote %1$d entries to the outbox</string>
+    <string name="task_notification_imported_title">Imported into the workspace</string>
+    <string name="task_notification_imported_text">Imported %1$d entries from the inbox</string>
+</resources>
