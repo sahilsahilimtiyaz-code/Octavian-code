@@ -52,6 +52,16 @@ if ((${#VERSIONED_DEV_PKGS[@]} == 0)); then
 fi
 log "探测到版本化头文件包: ${VERSIONED_DEV_PKGS[*]}"
 ENUM_PKGS=("${PACKAGES[@]}" "${VERSIONED_DEV_PKGS[@]}")
+# pkg-config 是过渡包（自身几乎不拥有文件）：反查真正提供 /usr/bin/pkg-config
+# 的包并纳入枚举，否则该二进制永远进不了清单（本次 CI 失败的原因）。
+# dpkg -S 输出形如 `pkgconf: /usr/bin/pkg-config`（或带 :arch 后缀），取首列。
+PKGCONFIG_PROVIDER="$(dpkg -S /usr/bin/pkg-config 2>/dev/null | awk -F'[:,]' '{print $1; exit}')"
+if [[ -z "$PKGCONFIG_PROVIDER" ]]; then
+  echo "无法定位 /usr/bin/pkg-config 的提供包" >&2
+  exit 1
+fi
+log "pkg-config 实际由包提供: $PKGCONFIG_PROVIDER"
+ENUM_PKGS+=("$PKGCONFIG_PROVIDER")
 
 # ---- 2. 基线镜像已有路径（过滤掉，避免 rootfs 重复条目）------------------------
 BASE_PATHS="$(mktemp)"
