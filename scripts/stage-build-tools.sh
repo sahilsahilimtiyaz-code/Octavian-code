@@ -259,11 +259,11 @@ fi
 # 内，否则失败；收进清单后重新过滤基线并补复制。循环到无悬空或超限。
 # 回填的每条路径都打进日志：清单之外的增量必须可审计。
 backfill_round=0
-prev_dangling_list=""
 while true; do
   backfill_round=$((backfill_round + 1))
   if ((backfill_round > 10)); then
-    echo "悬空链接回填不收敛" >&2
+    echo "悬空链接回填不收敛，当前仍悬空:" >&2
+    printf '%s\n' "$dangling_list" | head -n 20 | sed "s:^$DEST/::" >&2
     exit 1
   fi
   : > "$CHAINED"
@@ -271,14 +271,7 @@ while true; do
   if [[ -z "$dangling_list" ]]; then
     break
   fi
-  # 同一批次连续两轮毫无进展：直接把名单打印出来再失败，
-  # 而不是靠轮次计数猜（此前“每轮恒定 N 条”除了日志别无信息）。
-  if [[ "$dangling_list" == "$prev_dangling_list" ]]; then
-    echo "悬空链接回填停滞：以下链接连续两轮未收敛（各 targets 缺失或被反复过滤）:" >&2
-    printf '%s\n' "$dangling_list" | head -n 20 | sed "s:^$DEST/::" >&2
-    exit 1
-  fi
-  prev_dangling_list="$dangling_list"
+  before_lines=$(wc -l < "$COPY_LIST")
   while IFS= read -r link; do
     [[ -n "$link" ]] || continue
     rel="${link#"$DEST"/}"
@@ -306,10 +299,18 @@ while true; do
     break
   fi
   LC_ALL=C sort -u -o "$CHAINED" "$CHAINED"
-  log "悬空链接回填第 ${backfill_round} 轮: $(wc -l < "$CHAINED") 条"
+  log "悬空链接回填第 ${backfill_round} 轮: $(wc -l < "$CHAINED") 条候选"
   cat "$CHAINED" >> "$ALL_ENTRIES"
   LC_ALL=C sort -u -o "$ALL_ENTRIES" "$ALL_ENTRIES"
   LC_ALL=C comm -23 "$ALL_ENTRIES" "$BASE_PATHS" > "$COPY_LIST"
+  # 收敛判定看清单是否真正长大，而不是看本轮发现了多少条：
+  # 若新增全部命中基线/本树（dev .so 经基线内中间件解析即属此列），
+  # 清单不变，说明残留悬空在最终镜像里自洽，成功退出。
+  # 若清单持续变长却始终无法收敛，顶部的 10 轮上限会带着当轮名单失败。
+  if [[ "$(wc -l < "$COPY_LIST")" == "$before_lines" ]]; then
+    log "悬空链接回填收敛：本轮无新增需复制项，残留由基线镜像承接"
+    break
+  fi
   mapfile -t COPY_PATHS < "$COPY_LIST"
   cp -a --parents "${COPY_PATHS[@]}" "$DEST/"
   cat "$COPY_LIST" >> "$STAGED_PATHS"
