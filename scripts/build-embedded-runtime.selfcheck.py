@@ -216,7 +216,7 @@ def check_build_tools(module: object) -> None:
         root = Path(directory)
         tree = root / "build-tools"
         payloads = {
-            "usr/bin/gcc": arm64_elf(),
+            "usr/bin/gcc-13": arm64_elf(),
             "usr/bin/g++": arm64_elf(),
             "usr/bin/make": arm64_elf(),
             "usr/bin/pkg-config": arm64_elf(),
@@ -228,6 +228,9 @@ def check_build_tools(module: object) -> None:
             path = tree / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(payload)
+        # 真机形态：gcc 是 alternatives 符号链接，落盘必须是跟随后的真实常规文件
+        # （本次 CI 失败的根因），而不是原样保留的软链。
+        (tree / "usr/bin/gcc").symlink_to("gcc-13")
         archive = root / "build-tools.tar"
         with module.tarfile.open(archive, "w") as target:
             writer = module.RootfsWriter(target, 0)

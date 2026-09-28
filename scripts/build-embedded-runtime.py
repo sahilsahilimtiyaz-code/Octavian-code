@@ -178,6 +178,18 @@ NETWORK_TOOLS_REGULAR_FILE_PATHS = frozenset(
 # 这里只按目标路径写进镜像，**不在镜像里跑 apt**。
 # Go / Rust / JDK 不在此列：它们是数百 MB 到 GB 量级，走按需 toolpack，永不烘焙。
 BUILD_TOOLS_EXECUTABLE_PREFIXES = (PurePosixPath("usr/bin"), PurePosixPath("usr/lib/gcc"))
+# gcc / g++ 在上游是 update-alternatives 符号链接（/usr/bin/gcc ->
+# /etc/alternatives/gcc -> /usr/bin/gcc-13），pkg-config 同理。
+# verify-bundle.py 要求这四个入口是 0755 的真实常规文件（软链条目不算载荷），
+# 因此与 git-remote-https 同例：在落盘时跟随链接取真实载荷。
+BUILD_TOOLS_REGULAR_FILE_PATHS = frozenset(
+    {
+        "usr/bin/gcc",
+        "usr/bin/g++",
+        "usr/bin/make",
+        "usr/bin/pkg-config",
+    }
+)
 BUILD_TOOLS_REQUIRED_PATHS = (
     "usr/bin/gcc",
     "usr/bin/g++",
@@ -970,6 +982,7 @@ def add_build_tools(writer: RootfsWriter, tools_dir: Path) -> None:
         tools_dir,
         "",
         executable_prefixes=BUILD_TOOLS_EXECUTABLE_PREFIXES,
+        forced_regular_paths=BUILD_TOOLS_REGULAR_FILE_PATHS,
     )
     components = ["gcc", "g++", "make", "libc6-dev", "libstdc++-dev", "pkg-config", "binutils"]
     metadata = {
