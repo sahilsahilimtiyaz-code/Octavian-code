@@ -37,6 +37,26 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Check team signing secrets are present (values never printed)
+        # 签名缺失是新人最高频的红灯：Gradle 报的是一堆配置异常，
+        # 在这里先用一句话点名缺哪个 Secret（含直达链接），省掉半小时排查。
+        # 注意：只判空，不打印值（GitHub 对 Secrets 自动脱敏，但这里连读都不读）。
+        run: |
+          missing=0
+          if [ -z "${DSH_KEYSTORE_BASE64:-}" ]; then
+            echo "::error::Missing secret DSH_KEYSTORE_BASE64 — repo Settings → Secrets and variables → Actions → New repository secret, name exactly DSH_KEYSTORE_BASE64"
+            missing=1
+          fi
+          if [ -z "${DSH_KEYSTORE_PASSWORD:-}" ]; then
+            echo "::error::Missing secret DSH_KEYSTORE_PASSWORD — same place, name exactly DSH_KEYSTORE_PASSWORD"
+            missing=1
+          fi
+          if [ "$missing" = "1" ]; then
+            echo "See https://github.com/${{ github.repository }}/settings/secrets/actions" >&2
+            exit 1
+          fi
+          echo "Signing secrets present (lengths hidden). Continuing."
+
       - name: Set up Node.js 24.14.0
         uses: actions/setup-node@v4
         with:
