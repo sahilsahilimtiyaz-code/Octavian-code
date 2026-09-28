@@ -479,7 +479,7 @@ internal class RuntimeMailbox(private val store: RuntimeStore) {
      */
     internal fun attachmentDirectory(): File {
         val directories = requireDirectories()
-        val attachments = File(directories.inbox, ATTACHMENT_DIRECTORY)
+        val attachments = File(directories.inbox, RuntimeMailboxLayout.ATTACHMENT_DIRECTORY)
         if (!ensureDirectory(attachments, true) || !attachments.canWrite()) {
             throw RuntimeFailure(MailboxCodes.UNAVAILABLE, "附件目录不可写")
         }

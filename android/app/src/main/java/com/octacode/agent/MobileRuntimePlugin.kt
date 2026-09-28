@@ -528,7 +528,7 @@ class MobileRuntimePlugin : Plugin() {
             if (partsArray != null) {
                 // 富发送：文本 + 文件/图片引用。形态错误直接拒，原生侧另有第二道校验。
                 val parts = (0 until partsArray.length()).map { index ->
-                    val item = partsArray.getObject(index)
+                    val item = partsArray.optJSONObject(index)
                         ?: throw RuntimeFailure("SETTINGS_INVALID", "消息分段无效")
                     AgentChatPart(
                         type = item.getString("type").orEmpty(),
@@ -696,7 +696,6 @@ class MobileRuntimePlugin : Plugin() {
             controller.stopAgentEventStream()
             JSObject()
         }
-    }
     }
 
     @PluginMethod
