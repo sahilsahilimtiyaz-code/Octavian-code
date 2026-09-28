@@ -500,7 +500,14 @@ class MobileRuntimePlugin : Plugin() {
     fun agentChatCreate(call: PluginCall) {
         execute(call) {
             val title = call.getString("title")?.trim().orEmpty()
-            JSObject().put("json", controller.agentChatCreate(title))
+            val model = call.getString("model")?.trim().orEmpty()
+            val variant = call.getString("variant")?.trim().orEmpty()
+            if (model.isEmpty() && variant.isEmpty()) {
+                JSObject().put("json", controller.agentChatCreate(title))
+            } else {
+                // 模型/档位只在用户显式选择时才带：缺省走服务端默认，不替用户做决定。
+                JSObject().put("json", controller.agentChatCreateWithModel(title, model.ifEmpty { null }, variant.ifEmpty { null }))
+            }
         }
     }
 
@@ -534,6 +541,17 @@ class MobileRuntimePlugin : Plugin() {
             } else {
                 JSObject().put("json", controller.agentChatSend(sessionId, text))
             }
+        }
+    }
+
+    /**
+     * 权限：应用内桥接。
+     * 模型目录：`GET /config/providers` 原文透传，解析在前端做。
+     */
+    @PluginMethod
+    fun agentModels(call: PluginCall) {
+        execute(call) {
+            JSObject().put("json", controller.agentModels())
         }
     }
 

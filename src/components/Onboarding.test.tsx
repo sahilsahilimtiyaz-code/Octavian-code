@@ -46,7 +46,7 @@ describe('Onboarding', () => {
 
   it('renders the welcome step and navigates forward', () => {
     renderOnboarding()
-    expect(screen.getByText('欢迎使用 DeepSeek Harness Android')).toBeDefined()
+    expect(screen.getByText('欢迎使用 Octa Code')).toBeDefined()
     fireEvent.click(screen.getByRole('button', { name: /下一步/ }))
     expect(screen.getByText('安装 Ubuntu 运行时')).toBeDefined()
   })

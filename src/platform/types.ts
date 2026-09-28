@@ -119,6 +119,24 @@ export interface AgentChatJson {
   json: string
 }
 
+/**
+ * Agent 模型目录：从 `GET /config/providers` 归一化而来，只含展示与选择所需字段。
+ * variants 非空时才说明该模型有 effort 档位可调——没有就不画档位选择器。
+ */
+export interface AgentModelOption {
+  /** `provider/model` 全称，与 `opencode run -m` 同一写法。 */
+  id: string
+  name: string
+  providerId: string
+  providerName: string
+  variants: string[]
+  deprecated: boolean
+}
+
+export interface AgentModelCatalog {
+  models: AgentModelOption[]
+}
+
 /** 聊天分段：文本直传正文；文件/图片传落点内的访客路径引用。 */
 export type AgentChatPartType = 'text' | 'file' | 'image'
 
@@ -699,7 +717,7 @@ export interface RuntimeBridge {
    * 会话 id 形态、标题与正文长度前后两端各拦一道；返回原文 JSON。
    */
   agentChatSessions: () => Promise<AgentChatJson>
-  agentChatCreate: (title: string) => Promise<AgentChatJson>
+  agentChatCreate: (title: string, modelID?: string, variant?: string) => Promise<AgentChatJson>
   agentChatHistory: (sessionId: string) => Promise<AgentChatJson>
   agentChatSend: (sessionId: string, text: string, parts?: AgentChatPart[]) => Promise<AgentChatJson>
   /**
@@ -711,6 +729,8 @@ export interface RuntimeBridge {
    * 附件读取：只认落点内的访客路径，返回内容画缩略图；落点之外拒绝。
    */
   agentChatFile: (guestPath: string) => Promise<AttachmentContent>
+  /** 模型目录：全局 providers → models 归一化，不含密钥与地址。 */
+  agentModels: () => Promise<AgentModelCatalog>
   addRuntimeProgressListener: (listener: (event: RuntimeProgress) => void) => Promise<ListenerHandle>
   addTerminalOutputListener: (listener: (event: TerminalChunk) => void) => Promise<ListenerHandle>
   addTerminalExitListener: (listener: (event: TerminalExit) => void) => Promise<ListenerHandle>

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { normalizeMessage, OpenCodeClient, parseSseBlock } from './opencodeClient'
+import { normalizeMessage, OpenCodeClient, parseAgentModels, parseSseBlock } from './opencodeClient'
 
 function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status })
@@ -64,6 +64,80 @@ describe('normalizeMessage', () => {
   })
 })
 
+describe('parseAgentModels', () => {
+  it('接受 providers 数组 + models 数组', () => {
+    expect(
+      parseAgentModels({
+        providers: [
+          {
+            id: 'anthropic',
+            name: 'Anthropic',
+            models: [{ id: 'anthropic/claude-sonnet-4-6', name: 'Sonnet', variants: ['default', 'max'] }],
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        id: 'anthropic/claude-sonnet-4-6',
+        name: 'Sonnet',
+        providerId: 'anthropic',
+        providerName: 'Anthropic',
+        variants: ['default', 'max'],
+        deprecated: false,
+      },
+    ])
+  })
+
+  it('接受 providers 与 models 的 map 写法，跳过 hidden，标出 deprecated', () => {
+    expect(
+      parseAgentModels({
+        providers: {
+          openai: {
+            name: 'OpenAI',
+            models: {
+              'openai/gpt-5': { name: 'GPT-5', effort: ['low', 'high'] },
+              'openai/old': { name: 'Old', status: 'deprecated' },
+              'openai/secret': { name: 'Secret', hidden: true },
+            },
+          },
+        },
+      }),
+    ).toEqual([
+      {
+        id: 'openai/gpt-5',
+        name: 'GPT-5',
+        providerId: 'openai',
+        providerName: 'OpenAI',
+        variants: ['low', 'high'],
+        deprecated: false,
+      },
+      {
+        id: 'openai/old',
+        name: 'Old',
+        providerId: 'openai',
+        providerName: 'OpenAI',
+        variants: [],
+        deprecated: true,
+      },
+    ])
+  })
+
+  it('缺字段兜底：无名用 id，无 id 用键，坏条目跳过', () => {
+    expect(parseAgentModels({ providers: [{ models: [{}, 'nope'] }] })).toEqual([
+      {
+        id: 'provider-0/0',
+        name: '0',
+        providerId: 'provider-0',
+        providerName: 'provider-0',
+        variants: [],
+        deprecated: false,
+      },
+    ])
+    expect(() => parseAgentModels({})).toThrow('模型目录格式无效')
+    expect(() => parseAgentModels(null)).toThrow()
+  })
+})
+
 describe('OpenCodeClient', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
@@ -79,6 +153,28 @@ describe('OpenCodeClient', () => {
       { id: 's1', title: 't' },
       { id: 's2', title: '未命名会话' },
     ])
+  })
+
+  it('createSession 按需带上 model 与 variant', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(jsonResponse({ id: 's9', title: 't' })))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new OpenCodeClient('http://127.0.0.1:4097', { username: 'opencode', password: 'pw' })
+    await client.createSession('t', 'anthropic/claude-sonnet-4-6', 'max')
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(JSON.parse(init.body as string)).toEqual({
+      title: 't',
+      model: 'anthropic/claude-sonnet-4-6',
+      variant: 'max',
+    })
+  })
+
+  it('listModels 走 /config/providers 并归一化', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(jsonResponse({ providers: [] }))),
+    )
+    const client = new OpenCodeClient('http://127.0.0.1:4097', { username: 'opencode', password: 'pw' })
+    await expect(client.listModels()).resolves.toEqual([])
   })
 
   it('非 200 按状态码抛错', async () => {

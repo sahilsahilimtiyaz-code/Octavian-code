@@ -37,6 +37,7 @@ describe('createNativeAgentChat', () => {
     const chat = createNativeAgentChat(bridge)
     await expect(chat.listSessions()).resolves.toEqual([{ id: 's1', title: 't' }])
     await expect(chat.createSession('hi')).resolves.toEqual({ id: 's2', title: '未命名会话' })
+    await expect(chat.createSession('hi', 'anthropic/x', 'max')).resolves.toEqual({ id: 's2', title: '未命名会话' })
     await expect(chat.listMessages('s1')).resolves.toEqual([{ id: '', role: 'user', text: '', attachments: [] }])
     await expect(chat.sendMessage('s1', 'hi')).resolves.toBeUndefined()
   })

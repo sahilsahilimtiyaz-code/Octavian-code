@@ -3,6 +3,7 @@ import type {
   AgentCliStates,
   AgentChatJson,
   AgentEngineServerState,
+  AgentModelCatalog,
   AttachmentContent,
   DiagnosticLogState,
   DiagnosticLogText,
@@ -365,6 +366,7 @@ export function createBrowserBridge(): RuntimeBridge {
     agentChatHistory: (): Promise<AgentChatJson> => Promise.resolve({ json: '[]' }),
     agentChatSend: (): Promise<AgentChatJson> =>
       Promise.reject(new Error('浏览器预览不支持本机 Agent 聊天')),
+    agentModels: (): Promise<AgentModelCatalog> => Promise.resolve({ models: [] }),
     stageAgentAttachment: (): Promise<StagedAttachment> =>
       Promise.reject(new Error('浏览器预览不支持附件落点')),
     agentChatFile: (): Promise<AttachmentContent> => Promise.reject(new Error('浏览器预览不支持附件读取')),

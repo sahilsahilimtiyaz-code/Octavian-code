@@ -336,7 +336,7 @@ describe('App conversation gate', () => {
       })
     render(<App />)
 
-    await screen.findByRole('dialog', { name: '欢迎使用 DeepSeek Harness Android' })
+    await screen.findByRole('dialog', { name: '欢迎使用 Octa Code' })
     for (let index = 0; index < 5; index += 1) {
       fireEvent.click(screen.getByRole('button', { name: /下一步/ }))
     }
@@ -401,7 +401,7 @@ describe('应用语言', () => {
     expect(bridge.openHarness).not.toHaveBeenCalled()
     fireEvent.change(screen.getByLabelText('语言 / Language'), { target: { value: 'en' } })
     fireEvent.click(screen.getByRole('button', { name: '继续 / Continue' }))
-    expect(await screen.findByRole('dialog', { name: 'Welcome to DeepSeek Harness Android' })).toBeVisible()
+    expect(await screen.findByRole('dialog', { name: 'Welcome to Octa Code' })).toBeVisible()
     expect(bridge.setAppLanguage).toHaveBeenCalledWith('en')
     expect(window.localStorage.getItem('dsh-mobile-language-v1')).toBe('en')
     expect(document.documentElement.lang).toBe('en')

@@ -102,6 +102,7 @@ export const bridge = {
   agentChatSend: vi.fn(),
   stageAgentAttachment: vi.fn(),
   agentChatFile: vi.fn(),
+  agentModels: vi.fn(),
   managePlugins: vi.fn(),
   getDiagnosticLogState: vi.fn(),
   readDiagnosticLog: vi.fn(),
@@ -314,6 +315,7 @@ export function beforeEachAppTest(): void {
   bridge.agentChatSend.mockResolvedValue({ json: 'null' })
   bridge.stageAgentAttachment.mockResolvedValue({ path: '/mnt/inbox/attachments/0-test.png' })
   bridge.agentChatFile.mockResolvedValue({ mime: 'image/png', dataBase64: 'iVBORw0KGgo=' })
+  bridge.agentModels.mockResolvedValue({ models: [] })
   bridge.managePlugins.mockResolvedValue({ plugins: [] })
   bridge.getDiagnosticLogState.mockResolvedValue({ ...diagnostic })
   bridge.readDiagnosticLog.mockResolvedValue({

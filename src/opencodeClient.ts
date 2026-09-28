@@ -6,7 +6,7 @@
  * 上游加字段时客户端不炸，缺字段时抛错由调用方转成界面态。
  */
 
-import type { AgentChatPart } from './platform/types'
+import type { AgentChatPart, AgentModelOption } from './platform/types'
 
 export interface OpenCodeSession {
   id: string
@@ -113,6 +113,95 @@ export function parseSessionList(value: unknown): OpenCodeSession[] {
   return value.map(parseSession)
 }
 
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((entry): entry is string => typeof entry === 'string' && entry !== '')
+}
+
+/**
+ * 模型目录归一化：`GET /config/providers` 有 map 与数组两种历史写法，
+ * models 同样可能是 `{id: {...}}` 或 `[{...}]`——全部接受，缺的一律兜底。
+ *
+ * variants 只收字符串数组（`effort`/`effortLevels`/`reasoningEffort` 同义）；
+ * `hidden: true` 的跳过，`deprecated` 的保留但标出来由界面置灰。
+ */
+export function parseAgentModels(value: unknown): AgentModelOption[] {
+  const root = asRecord(value, '模型目录')
+  const providersRaw = root.providers
+  const providerEntries: Array<{ key: string; item: Record<string, unknown> }> = []
+  if (Array.isArray(providersRaw)) {
+    providersRaw.forEach((entry, index) => {
+      try {
+        const item = asRecord(entry, '供应商')
+        providerEntries.push({ key: asString(item.id) || `provider-${index}`, item })
+      } catch {
+        // 坏条目跳过不断流。
+      }
+    })
+  } else {
+    try {
+      const mapping = asRecord(providersRaw, '供应商表')
+      Object.entries(mapping).forEach(([key, entry]) => {
+        try {
+          providerEntries.push({ key, item: asRecord(entry, '供应商') })
+        } catch {
+          // 坏条目跳过不断流。
+        }
+      })
+    } catch {
+      throw new Error('模型目录格式无效')
+    }
+  }
+  const models: AgentModelOption[] = []
+  for (const { key, item } of providerEntries) {
+    const providerId = asString(item.id) || key
+    const providerName = asString(item.name) || providerId
+    const modelsRaw = item.models
+    const modelEntries: Array<{ key: string; entry: Record<string, unknown> }> = []
+    if (Array.isArray(modelsRaw)) {
+      modelsRaw.forEach((candidate, index) => {
+        try {
+          modelEntries.push({ key: String(index), entry: asRecord(candidate, '模型') })
+        } catch {
+          // 坏条目跳过不断流。
+        }
+      })
+    } else if (modelsRaw !== undefined && modelsRaw !== null) {
+      try {
+        Object.entries(asRecord(modelsRaw, '模型表')).forEach(([modelKey, candidate]) => {
+          try {
+            modelEntries.push({ key: modelKey, entry: asRecord(candidate, '模型') })
+          } catch {
+            // 坏条目跳过不断流。
+          }
+        })
+      } catch {
+        continue
+      }
+    }
+    for (const { key: modelKey, entry } of modelEntries) {
+      if (entry.hidden === true) continue
+      const modelId = asString(entry.id) || modelKey
+      const qualified = modelId.includes('/') ? modelId : `${providerId}/${modelId}`
+      const variants = [
+        ...asStringArray(entry.variants),
+        ...asStringArray(entry.effort),
+        ...asStringArray(entry.effortLevels),
+        ...asStringArray(entry.reasoningEffort),
+      ].filter((variant, index, all) => all.indexOf(variant) === index)
+      models.push({
+        id: qualified,
+        name: asString(entry.name) || modelId,
+        providerId,
+        providerName,
+        variants,
+        deprecated: entry.status === 'deprecated' || entry.deprecated === true,
+      })
+    }
+  }
+  return models
+}
+
 /** 消息列表归一化：纯函数，直连与中继共用；非法条目跳过不断流。 */
 export function parseMessageList(value: unknown): ChatMessage[] {
   if (!Array.isArray(value)) throw new Error('消息列表格式无效')
@@ -182,17 +271,26 @@ export class OpenCodeClient {
     return parseSessionList(await this.request('/session'))
   }
 
-  async createSession(title?: string): Promise<OpenCodeSession> {
+  async createSession(title?: string, modelID?: string, variant?: string): Promise<OpenCodeSession> {
+    const body: Record<string, string> = {}
+    if (title !== undefined) body.title = title
+    // model/variant 与服务端 SDK 的 create body 键一致；未知键服务端按 JSON 惯例忽略。
+    if (modelID !== undefined) body.model = modelID
+    if (variant !== undefined) body.variant = variant
     const value = asRecord(
       await this.request('/session', {
         method: 'POST',
-        body: JSON.stringify(title === undefined ? {} : { title }),
+        body: JSON.stringify(body),
       }),
       '会话',
     )
     const id = asString(value.id)
     if (id === '') throw new Error('会话缺少 id')
     return { id, title: asString(value.title) || '未命名会话' }
+  }
+
+  async listModels(): Promise<AgentModelOption[]> {
+    return parseAgentModels(await this.request('/config/providers'))
   }
 
   async listMessages(sessionId: string): Promise<ChatMessage[]> {

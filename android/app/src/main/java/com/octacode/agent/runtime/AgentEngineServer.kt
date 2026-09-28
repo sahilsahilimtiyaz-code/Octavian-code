@@ -66,6 +66,50 @@ class AgentEngineServer(private val store: RuntimeStore) {
         return relay("POST", "/session", "{\"title\":" + jsonQuote(title) + "}")
     }
 
+    /**
+     * 模型目录：`GET /config/providers` 原文透传，解析在 TypeScript 侧做。
+     *
+     * 不带 directory/workspace 查询：全局模型目录不需要项目作用域；
+     * 服务端若要求作用域会 4xx，界面会把原文错误如实展示出来。
+     */
+    fun agentModels(): String = synchronized(lock) {
+        return relay("GET", "/config/providers", null)
+    }
+
+    /**
+     * 带模型的新会话：`POST /session {title, model?, variant?}`。
+     *
+     * model 形态为 `provider/model`（与 `opencode run -m` 同一写法）；
+     * variant 是模型的 effort 档位，只在目录声明了它时才传。
+     * 未知字段服务端按 JSON 惯例忽略——因此 variant 即使在某版本不生效，
+     * 最坏情况也只是回到该模型的默认档位，不会建不出会话。
+     */
+    fun chatCreateWithModel(title: String, modelID: String?, variant: String?): String = synchronized(lock) {
+        if (title.isEmpty() || title.length > 120) {
+            throw RuntimeFailure("SETTINGS_INVALID", "会话标题无效")
+        }
+        val body = buildString {
+            append("{\"title\":")
+            append(jsonQuote(title))
+            if (!modelID.isNullOrEmpty()) {
+                if (!isModelId(modelID)) {
+                    throw RuntimeFailure("SETTINGS_INVALID", "模型标识无效")
+                }
+                append(",\"model\":")
+                append(jsonQuote(modelID))
+            }
+            if (!variant.isNullOrEmpty()) {
+                if (!VARIANT_PATTERN.matches(variant)) {
+                    throw RuntimeFailure("SETTINGS_INVALID", "模型档位无效")
+                }
+                append(",\"variant\":")
+                append(jsonQuote(variant))
+            }
+            append('}')
+        }
+        return relay("POST", "/session", body)
+    }
+
     fun chatHistory(sessionId: String): String = synchronized(lock) {
         return relay("GET", "/session/" + requireSessionId(sessionId) + "/message", null)
     }
@@ -316,6 +360,13 @@ class AgentEngineServer(private val store: RuntimeStore) {
         return sessionId
     }
 
+    /** 模型标识 `provider/model`：两段各含至少一个字母数字，纯符号组合不过。 */
+    private fun isModelId(value: String): Boolean {
+        val segments = value.split('/')
+        return segments.size == 2 &&
+            segments.all { MODEL_ID_SEGMENT.matches(it) && MODEL_ID_ALNUM.containsMatchIn(it) }
+    }
+
     /** 最小 JSON 字符串转义：opencode 的 id 与我们拼的正文都经这里进请求体。 */
     private fun jsonQuote(value: String): String = buildString {
         append('"')
@@ -447,6 +498,11 @@ class AgentEngineServer(private val store: RuntimeStore) {
         private const val MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
         private const val MAX_STAGE_ATTEMPTS = 100
         private val SESSION_ID_PATTERN = Regex("^[A-Za-z0-9_-]{1,64}$")
+        /** 模型标识段字符集（`provider` / `model` 各一段）。 */
+        private val MODEL_ID_SEGMENT = Regex("^[A-Za-z0-9_.-]{1,64}$")
+        private val MODEL_ID_ALNUM = Regex("[A-Za-z0-9]")
+        /** effort 档位名：TUI 侧如 `default`，只收紧字符集。 */
+        private val VARIANT_PATTERN = Regex("^[A-Za-z0-9_.-]{1,64}$")
         private val ATTACHMENT_NAME_PATTERN = Regex("^[A-Za-z0-9._-]{1,64}$")
         /** v1 附件类型：图片 + PDF + 纯文本。压缩包/可执行文件不接受。 */
         private val ATTACHMENT_MIME_TYPES = setOf(

@@ -14,8 +14,10 @@ import {
   validateAgentChatText,
   validateAgentChatTitle,
   validateAgentEngineServerState,
+  validateAgentModelId,
   validateAgentServerPort,
   validateAgentSessionId,
+  validateAgentVariant,
   validateAttachmentBase64,
   validateAttachmentContent,
   validateAttachmentFileName,
@@ -970,6 +972,16 @@ describe('Agent 聊天与附件校验', () => {
     expect(() => validateAgentChatTitle('   ')).toThrow('会话标题无效')
     expect(validateAgentChatTitle('  t  ')).toBe('t')
     expect(() => validateAgentChatText('')).toThrow('消息内容无效')
+  })
+
+  it('模型标识只认 provider/model 写法，档位只收紧字符集', () => {
+    expect(validateAgentModelId('anthropic/claude-sonnet-4-6')).toBe('anthropic/claude-sonnet-4-6')
+    for (const bad of ['gpt-5', 'a/b/c', '', '../x', null]) {
+      expect(() => validateAgentModelId(bad), String(bad)).toThrow('模型标识无效')
+    }
+    expect(validateAgentVariant('max')).toBe('max')
+    expect(() => validateAgentVariant('a b')).toThrow('模型档位无效')
+    expect(() => validateAgentVariant('')).toThrow('模型档位无效')
   })
 
   it('分段只认文本与落点引用', () => {

@@ -2,7 +2,7 @@ import type { CapacitorConfig } from '@capacitor/cli'
 
 const config: CapacitorConfig = {
   appId: 'com.octacode.agent',
-  appName: 'DeepSeek Harness',
+  appName: 'Octa Code',
   webDir: 'dist',
   server: {
     androidScheme: 'https',

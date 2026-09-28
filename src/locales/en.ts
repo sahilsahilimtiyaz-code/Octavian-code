@@ -539,7 +539,7 @@ export const english: Readonly<Record<string, string>> = {
   "正在连接本机环境": "Connecting to local environment",
   "打开应用设置": "Open app settings",
   "关闭提示": "Dismiss notification",
-  "欢迎使用 DeepSeek Harness Android": "Welcome to DeepSeek Harness Android",
+  "欢迎使用 Octa Code": "Welcome to Octa Code",
   "安装 Ubuntu 运行时": "Install Ubuntu runtime",
   "配置模型 API Key": "Configure model API key",
   "设备 Shell（可选）": "Device Shell (optional)",

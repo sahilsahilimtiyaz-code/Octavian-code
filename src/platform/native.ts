@@ -1,4 +1,5 @@
 import { validatePluginCatalog, validatePluginRequest } from './plugins'
+import { parseAgentModels, parseJsonPayload } from '../opencodeClient'
 import { Capacitor, registerPlugin } from '@capacitor/core'
 import type { PluginListenerHandle } from '@capacitor/core'
 import { createBrowserBridge } from './browser'
@@ -40,8 +41,10 @@ import {
   validateAgentChatText,
   validateAgentChatTitle,
   validateAgentEngineServerState,
+  validateAgentModelId,
   validateAgentServerPort,
   validateAgentSessionId,
+  validateAgentVariant,
   validateAttachmentBase64,
   validateAttachmentContent,
   validateAttachmentFileName,
@@ -125,11 +128,12 @@ interface NativeRuntimePlugin {
   startAgentServer(options: { port?: number }): Promise<unknown>
   stopAgentServer(): Promise<unknown>
   agentChatSessions(): Promise<unknown>
-  agentChatCreate(options: { title: string }): Promise<unknown>
+  agentChatCreate(options: { title: string; model?: string; variant?: string }): Promise<unknown>
   agentChatHistory(options: { sessionId: string }): Promise<unknown>
   agentChatSend(options: { sessionId: string; text?: string; parts?: unknown }): Promise<unknown>
   stageAgentAttachment(options: { fileName: string; mime: string; dataBase64: string }): Promise<unknown>
   agentChatFile(options: { guestPath: string }): Promise<unknown>
+  agentModels(): Promise<unknown>
   getDiagnosticLogState(): Promise<DiagnosticLogState>
   readDiagnosticLog(options: { maxBytes?: number }): Promise<unknown>
   setDiagnosticLogSettings(options: { enabled: boolean; retentionDays: number }): Promise<DiagnosticLogState>
@@ -268,8 +272,12 @@ function createNativeBridge(): RuntimeBridge {
     stopAgentServer: () => NativeRuntime.stopAgentServer().then(validateAgentEngineServerState),
     // Agent 聊天中继：id/标题/正文形态前端先拦，原生侧代发 HTTP 后原文返回。
     agentChatSessions: () => NativeRuntime.agentChatSessions().then(validateAgentChatJson),
-    agentChatCreate: title => NativeRuntime
-      .agentChatCreate({ title: validateAgentChatTitle(title) })
+    agentChatCreate: (title, modelID, variant) => NativeRuntime
+      .agentChatCreate({
+        title: validateAgentChatTitle(title),
+        ...(modelID === undefined ? {} : { model: validateAgentModelId(modelID) }),
+        ...(variant === undefined ? {} : { variant: validateAgentVariant(variant) }),
+      })
       .then(validateAgentChatJson),
     agentChatHistory: sessionId => NativeRuntime
       .agentChatHistory({ sessionId: validateAgentSessionId(sessionId) })
@@ -292,6 +300,10 @@ function createNativeBridge(): RuntimeBridge {
     agentChatFile: guestPath => NativeRuntime
       .agentChatFile({ guestPath: validateAttachmentGuestPath(guestPath) })
       .then(validateAttachmentContent),
+    // 模型目录：原文经 8MB 上限后归一化，不含密钥与地址。
+    agentModels: () => NativeRuntime.agentModels().then(value => ({
+      models: parseAgentModels(parseJsonPayload(validateAgentChatJson(value).json)),
+    })),
     readDiagnosticLog: options => NativeRuntime.readDiagnosticLog({ maxBytes: options?.maxBytes }).then(validateDiagnosticLogText),
     getDiagnosticLogState: () => NativeRuntime.getDiagnosticLogState().then(validateDiagnosticLogState),
     setDiagnosticLogSettings: (enabled, retentionDays) => {

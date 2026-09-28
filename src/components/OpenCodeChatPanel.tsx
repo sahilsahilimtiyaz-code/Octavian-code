@@ -6,11 +6,15 @@ import {
   createNativeAgentChat,
   guessAttachmentMime,
   pollUntilSettled,
+  readDefaultModelId,
+  readDefaultVariant,
   sanitizeAttachmentName,
+  saveDefaultModelId,
+  saveDefaultVariant,
 } from '../agentChat'
 import { t } from '../i18n'
 import type { ChatAttachment, ChatMessage, OpenCodeSession } from '../opencodeClient'
-import type { AgentChatPart, AgentEngineServerState, RuntimeBridge } from '../platform/types'
+import type { AgentChatPart, AgentEngineServerState, AgentModelOption, RuntimeBridge } from '../platform/types'
 import { validateAttachmentMime } from '../platform/validation'
 
 interface OpenCodeChatPanelProps {
@@ -91,6 +95,11 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
   const [staging, setStaging] = useState(false)
   const [thumbs, setThumbs] = useState<Record<string, string>>({})
   const [thumbFailed, setThumbFailed] = useState<Record<string, boolean>>({})
+  const [models, setModels] = useState<AgentModelOption[]>([])
+  const [modelsError, setModelsError] = useState<string | null>(null)
+  const [selectedModel, setSelectedModel] = useState<string>(() => readDefaultModelId())
+  const [selectedVariant, setSelectedVariant] = useState<string>(() => readDefaultVariant())
+  const [sessionModels, setSessionModels] = useState<Record<string, string>>({})
   const fileInput = useRef<HTMLInputElement>(null)
   const cancelled = useRef(false)
 
@@ -149,6 +158,45 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
   useEffect(() => {
     if (server?.running === true) refreshSessions()
   }, [server?.running, refreshSessions])
+
+  const refreshModels = useCallback(() => {
+    setModelsError(null)
+    void transport.listModels().then(
+      value => {
+        if (cancelled.current) return
+        setModels(value)
+      },
+      error => {
+        if (cancelled.current) return
+        setModelsError(errorMessage(error))
+      },
+    )
+  }, [transport])
+
+  useEffect(() => {
+    if (server?.running === true) refreshModels()
+  }, [server?.running, refreshModels])
+
+  // 当前选中的模型条目：目录里找不到（密钥没配/模型下线）就按未选择处理，
+  // 新会话走服务端默认，而不是拿一个不存在的 id 去建会话。
+  const selectedOption = models.find(option => option.id === selectedModel)
+  const variantOptions = selectedOption?.variants ?? []
+  const effectiveVariant = variantOptions.includes(selectedVariant) ? selectedVariant : ''
+
+  const pickModel = (id: string) => {
+    setSelectedModel(id)
+    saveDefaultModelId(id)
+    const next = models.find(option => option.id === id)
+    if (next === undefined || !next.variants.includes(selectedVariant)) {
+      setSelectedVariant('')
+      saveDefaultVariant('')
+    }
+  }
+
+  const pickVariant = (variant: string) => {
+    setSelectedVariant(variant)
+    saveDefaultVariant(variant)
+  }
 
   const refreshMessages = useCallback(
     (sessionId: string, follow = false) => {
@@ -283,11 +331,17 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
     setCreating(true)
     setChatError(null)
     const title = `${t('新会话')} ${new Date().toLocaleString()}`
-    void transport.createSession(title).then(
+    const model = selectedOption?.id
+    const variant = model !== undefined && effectiveVariant !== '' ? effectiveVariant : undefined
+    void transport.createSession(title, model, variant).then(
       session => {
         if (cancelled.current) return
         setCreating(false)
         setSessions(previous => [session, ...previous])
+        if (model !== undefined) {
+          const label = variant !== undefined ? `${model} · ${variant}` : model
+          setSessionModels(previous => ({ ...previous, [session.id]: label }))
+        }
         setActiveId(session.id)
       },
       error => {
@@ -384,6 +438,50 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
       )}
 
       {server?.running === true && (
+        <section className="chat-modelbar" aria-label={t('模型')}>
+          <select
+            className="chat-select"
+            value={selectedOption?.id ?? ''}
+            onChange={event => pickModel(event.target.value)}
+            aria-label={t('新会话模型')}
+          >
+            <option value="">{t('默认模型')}</option>
+            {Array.from(
+              models.reduce((groups, option) => {
+                const group = groups.get(option.providerName) ?? []
+                group.push(option)
+                groups.set(option.providerName, group)
+                return groups
+              }, new Map<string, AgentModelOption[]>()),
+            ).map(([providerName, options]) => (
+              <optgroup key={providerName} label={providerName}>
+                {options.map(option => (
+                  <option key={option.id} value={option.id} disabled={option.deprecated}>
+                    {option.name}{option.deprecated ? t('（已下线）') : ''}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+          {variantOptions.length > 0 && (
+            <select
+              className="chat-select"
+              value={effectiveVariant}
+              onChange={event => pickVariant(event.target.value)}
+              aria-label={t('Effort 档位')}
+              title={t('该模型声明的 effort 档位；不选则用服务端默认')}
+            >
+              <option value="">{t('默认档位')}</option>
+              {variantOptions.map(variant => (
+                <option key={variant} value={variant}>{variant}</option>
+              ))}
+            </select>
+          )}
+          {modelsError !== null && <span className="settings-note">{modelsError}</span>}
+        </section>
+      )}
+
+      {server?.running === true && (
         <>
           <section className="chat-sessions" aria-label={t('会话')}>
             <button className="button button-secondary compact-button" type="button" onClick={createSession} disabled={creating}>
@@ -414,6 +512,9 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
           )}
 
           <section className="chat-transcript" aria-live="polite" aria-label={t('对话')}>
+            {activeId !== null && sessionModels[activeId] !== undefined && (
+              <p className="settings-note">{t('当前会话模型：')}{sessionModels[activeId]}</p>
+            )}
             {messages.map((message, index) => (
               <div key={message.id !== '' ? message.id : `m${index}`} className={message.role === 'user' ? 'chat-message user message-in' : 'chat-message assistant message-in'}>
                 <div className="chat-bubble">

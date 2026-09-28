@@ -593,6 +593,35 @@ export function validateAgentChatTitle(value: unknown): string {
   return title
 }
 
+const AGENT_MODEL_ID_SEGMENT = /^[A-Za-z0-9_.-]{1,64}$/
+const AGENT_VARIANT_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/
+
+/**
+ * 模型标识 `provider/model`：与 `opencode run -m` 同一写法，原生侧另有第二道校验。
+ *
+ * 两段都必须含至少一个字母数字：`../x` 这类纯符号组合在形态关就拒绝，
+ * 免得发给服务端再拿回一个不知所云的错误。
+ */
+export function validateAgentModelId(value: unknown): string {
+  if (typeof value !== 'string') throw new Error('模型标识无效')
+  const segments = value.split('/')
+  if (
+    segments.length !== 2 ||
+    !segments.every(segment => AGENT_MODEL_ID_SEGMENT.test(segment) && /[A-Za-z0-9]/.test(segment))
+  ) {
+    throw new Error('模型标识无效')
+  }
+  return value
+}
+
+/** effort 档位名：只收紧字符集，档位是否存在由目录决定。 */
+export function validateAgentVariant(value: unknown): string {
+  if (typeof value !== 'string' || !AGENT_VARIANT_PATTERN.test(value)) {
+    throw new Error('模型档位无效')
+  }
+  return value
+}
+
 /** 会话标识：opencode 形态（字母数字 + 下划线/连字符，64 以内）。 */
 export function validateAgentSessionId(value: unknown): string {
   if (typeof value !== 'string' || !AGENT_SESSION_ID_PATTERN.test(value)) {

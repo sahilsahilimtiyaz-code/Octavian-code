@@ -573,10 +573,10 @@ function errorMessage(error: unknown): string {
 
 function Brand() {
   return (
-    <div className="brand" aria-label="DeepSeek Harness">
+    <div className="brand" aria-label="Octa Code">
       <span className="brand-symbol" aria-hidden="true"><img src={appMark} alt="" width={26} height={26} /></span>
-      <span className="brand-name">deepseek</span>
-      <span className="brand-badge">HARNESS</span>
+      <span className="brand-name">Octa Code</span>
+      <span className="brand-badge">AGENT</span>
     </div>
   )
 }

@@ -8,7 +8,7 @@
  */
 import type { RuntimeBridge } from './platform/types'
 import type { ChatMessage, OpenCodeSession } from './opencodeClient'
-import type { AgentChatPart, AttachmentContent, StagedAttachment } from './platform/types'
+import type { AgentChatPart, AgentModelOption, AttachmentContent, StagedAttachment } from './platform/types'
 import {
   parseJsonPayload,
   parseMessageList,
@@ -18,25 +18,28 @@ import {
 
 export interface AgentChatTransport {
   listSessions: () => Promise<OpenCodeSession[]>
-  createSession: (title: string) => Promise<OpenCodeSession>
+  createSession: (title: string, modelID?: string, variant?: string) => Promise<OpenCodeSession>
   listMessages: (sessionId: string) => Promise<ChatMessage[]>
   sendMessage: (sessionId: string, text: string, parts?: AgentChatPart[]) => Promise<void>
   stageAttachment: (fileName: string, mime: string, dataBase64: string) => Promise<StagedAttachment>
   readAttachment: (guestPath: string) => Promise<AttachmentContent>
+  listModels: () => Promise<AgentModelOption[]>
 }
 
 export function createNativeAgentChat(bridge: RuntimeBridge): AgentChatTransport {
   return {
     listSessions: () =>
       bridge.agentChatSessions().then(payload => parseSessionList(parseJsonPayload(payload.json))),
-    createSession: title =>
-      bridge.agentChatCreate(title).then(payload => parseSession(parseJsonPayload(payload.json))),
+    createSession: (title, modelID, variant) =>
+      bridge.agentChatCreate(title, modelID, variant).then(payload => parseSession(parseJsonPayload(payload.json))),
     listMessages: sessionId =>
       bridge.agentChatHistory(sessionId).then(payload => parseMessageList(parseJsonPayload(payload.json))),
     sendMessage: (sessionId, text, parts) =>
       bridge.agentChatSend(sessionId, text, parts).then(() => undefined),
     stageAttachment: (fileName, mime, dataBase64) => bridge.stageAgentAttachment(fileName, mime, dataBase64),
     readAttachment: guestPath => bridge.agentChatFile(guestPath),
+    // 目录在桥层已经归一化（native.ts 里 parseAgentModels），这里直接透传。
+    listModels: () => bridge.agentModels().then(catalog => catalog.models),
   }
 }
 
@@ -110,4 +113,51 @@ export function sanitizeAttachmentName(fileName: string): string {
   const cleaned = base.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+/, '').slice(0, 64)
   if (cleaned === '' || /^\.+$/.test(cleaned)) return 'file'
   return cleaned
+}
+
+export const DEFAULT_MODEL_STORAGE_KEY = 'octacode-model-v1'
+export const DEFAULT_VARIANT_STORAGE_KEY = 'octacode-variant-v1'
+
+/** 默认模型（`provider/model` 全称）：非法值回退为空（= 服务端默认）。 */
+export function readDefaultModelId(): string {
+  try {
+    const value = window.localStorage.getItem(DEFAULT_MODEL_STORAGE_KEY)
+    return typeof value === 'string' && value !== '' ? value : ''
+  } catch {
+    return ''
+  }
+}
+
+export function saveDefaultModelId(id: string): void {
+  try {
+    if (id === '') {
+      window.localStorage.removeItem(DEFAULT_MODEL_STORAGE_KEY)
+    } else {
+      window.localStorage.setItem(DEFAULT_MODEL_STORAGE_KEY, id)
+    }
+  } catch {
+    // 存不下就用本次会话的值，界面不为此报错。
+  }
+}
+
+/** 默认 effort 档位：只在所选模型声明了它时才会被发送。 */
+export function readDefaultVariant(): string {
+  try {
+    const value = window.localStorage.getItem(DEFAULT_VARIANT_STORAGE_KEY)
+    return typeof value === 'string' ? value : ''
+  } catch {
+    return ''
+  }
+}
+
+export function saveDefaultVariant(variant: string): void {
+  try {
+    if (variant === '') {
+      window.localStorage.removeItem(DEFAULT_VARIANT_STORAGE_KEY)
+    } else {
+      window.localStorage.setItem(DEFAULT_VARIANT_STORAGE_KEY, variant)
+    }
+  } catch {
+    // 存不下就用本次会话的值，界面不为此报错。
+  }
 }

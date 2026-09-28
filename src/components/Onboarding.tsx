@@ -23,7 +23,7 @@ interface OnboardingProps {
 }
 
 const STEPS = [
-  { id: 'welcome', title: '欢迎使用 DeepSeek Harness Android', icon: Sparkles },
+  { id: 'welcome', title: '欢迎使用 Octa Code', icon: Sparkles },
   { id: 'runtime', title: '安装 Ubuntu 运行时', icon: Blocks },
   { id: 'apikey', title: '配置模型 API Key', icon: KeyRound },
   { id: 'shizuku', title: '设备 Shell（可选）', icon: ShieldCheck },
