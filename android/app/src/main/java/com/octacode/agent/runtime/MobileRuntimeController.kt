@@ -152,6 +152,56 @@ class MobileRuntimeController(
     }
 
     /**
+     * 中止、 fork 与审批中继：原文透传，解析在前端做。
+     */
+    fun agentChatAbort(sessionId: String): String = lifecycleLock.withLock {
+        ensureOpen()
+        agentEngine.chatAbort(sessionId)
+    }
+
+    fun agentChatFork(sessionId: String, messageId: String): String = lifecycleLock.withLock {
+        ensureOpen()
+        agentEngine.chatFork(sessionId, messageId)
+    }
+
+    fun agentPermissionReply(sessionId: String, requestId: String, reply: String, message: String?): String =
+        lifecycleLock.withLock {
+            ensureOpen()
+            agentEngine.permissionReply(sessionId, requestId, reply, message)
+        }
+
+    fun agentQuestionReply(sessionId: String, requestId: String, answers: List<String>): String =
+        lifecycleLock.withLock {
+            ensureOpen()
+            agentEngine.questionReply(sessionId, requestId, answers)
+        }
+
+    fun agentQuestionReject(sessionId: String, requestId: String): String = lifecycleLock.withLock {
+        ensureOpen()
+        agentEngine.questionReject(sessionId, requestId)
+    }
+
+    fun agentQuestionList(sessionId: String): String = lifecycleLock.withLock {
+        ensureOpen()
+        agentEngine.questionList(sessionId)
+    }
+
+    fun agentPermissionFeed(): String = lifecycleLock.withLock {
+        ensureOpen()
+        agentEngine.permissionFeed()
+    }
+
+    fun startAgentEventStream(listener: (String) -> Unit): Unit = lifecycleLock.withLock {
+        ensureOpen()
+        agentEngine.startEventStream(listener)
+    }
+
+    fun stopAgentEventStream(): Unit = lifecycleLock.withLock {
+        ensureOpen()
+        agentEngine.stopEventStream()
+    }
+
+    /**
      * 附件落点与读取：inbox/attachments 子目录，无权限时抛错由界面引导授权。
      */
     fun stageAgentAttachment(fileName: String, mime: String, dataBase64: String): StagedAttachment =

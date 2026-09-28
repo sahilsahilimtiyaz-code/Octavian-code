@@ -8,10 +8,21 @@
  */
 import type { RuntimeBridge } from './platform/types'
 import type { ChatMessage, OpenCodeSession } from './opencodeClient'
-import type { AgentChatPart, AgentModelOption, AttachmentContent, StagedAttachment } from './platform/types'
+import type {
+  AgentChatPart,
+  AgentEvent,
+  AgentModelOption,
+  AgentPermissionRequest,
+  AgentQuestionRequest,
+  AttachmentContent,
+  PermissionReply,
+  StagedAttachment,
+} from './platform/types'
 import {
   parseJsonPayload,
   parseMessageList,
+  parsePermissionFeed,
+  parseQuestionList,
   parseSession,
   parseSessionList,
 } from './opencodeClient'
@@ -24,6 +35,14 @@ export interface AgentChatTransport {
   stageAttachment: (fileName: string, mime: string, dataBase64: string) => Promise<StagedAttachment>
   readAttachment: (guestPath: string) => Promise<AttachmentContent>
   listModels: () => Promise<AgentModelOption[]>
+  abortSession: (sessionId: string) => Promise<void>
+  forkSession: (sessionId: string, messageId: string) => Promise<OpenCodeSession>
+  replyPermission: (sessionId: string, requestId: string, reply: PermissionReply, message?: string) => Promise<void>
+  replyQuestion: (sessionId: string, requestId: string, answers: string[]) => Promise<void>
+  rejectQuestion: (sessionId: string, requestId: string) => Promise<void>
+  listQuestions: (sessionId: string) => Promise<AgentQuestionRequest[]>
+  permissionFeed: (sessionId: string) => Promise<AgentPermissionRequest[]>
+  subscribeEvents: (onEvent: (event: AgentEvent) => void) => Promise<() => void>
 }
 
 export function createNativeAgentChat(bridge: RuntimeBridge): AgentChatTransport {
@@ -40,6 +59,31 @@ export function createNativeAgentChat(bridge: RuntimeBridge): AgentChatTransport
     readAttachment: guestPath => bridge.agentChatFile(guestPath),
     // 目录在桥层已经归一化（native.ts 里 parseAgentModels），这里直接透传。
     listModels: () => bridge.agentModels().then(catalog => catalog.models),
+    abortSession: sessionId => bridge.agentChatAbort(sessionId).then(() => undefined),
+    forkSession: (sessionId, messageId) =>
+      bridge.agentChatFork(sessionId, messageId).then(payload => parseSession(parseJsonPayload(payload.json))),
+    replyPermission: (sessionId, requestId, reply, message) =>
+      bridge.agentPermissionReply(sessionId, requestId, reply, message).then(() => undefined),
+    replyQuestion: (sessionId, requestId, answers) =>
+      bridge.agentQuestionReply(sessionId, requestId, answers).then(() => undefined),
+    rejectQuestion: (sessionId, requestId) =>
+      bridge.agentQuestionReject(sessionId, requestId).then(() => undefined),
+    listQuestions: sessionId =>
+      bridge.agentQuestionList(sessionId).then(payload => parseQuestionList(parseJsonPayload(payload.json))),
+    permissionFeed: sessionId =>
+      bridge
+        .agentPermissionFeed()
+        .then(payload => parsePermissionFeed(parseJsonPayload(payload.json)))
+        .then(requests => requests.filter(request => request.sessionId === '' || request.sessionId === sessionId)),
+    // 事件流：先开泵再挂监听，关的时候先摘监听再停泵——顺序反了会丢尾块或抛错。
+    subscribeEvents: async onEvent => {
+      await bridge.startAgentEventStream()
+      const handle = await bridge.addAgentEventListener(onEvent)
+      return () => {
+        void handle.remove().catch(() => undefined)
+        void bridge.stopAgentEventStream().catch(() => undefined)
+      }
+    },
   }
 }
 

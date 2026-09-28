@@ -32,7 +32,9 @@ import type {
   AgentChatPart,
   AgentChatPartType,
   AgentEngineServerState,
+  AgentEvent,
   AttachmentContent,
+  PermissionReply,
   StagedAttachment,
   ShizukuState,
   StorageAccessState,
@@ -620,6 +622,55 @@ export function validateAgentVariant(value: unknown): string {
     throw new Error('模型档位无效')
   }
   return value
+}
+
+const AGENT_MESSAGE_ID_PATTERN = /^[A-Za-z0-9_.-]{1,128}$/
+const PERMISSION_REPLIES: readonly string[] = ['once', 'always', 'reject']
+const QUESTION_ANSWERS_MAX = 8
+const QUESTION_ANSWER_MAX_CHARS = 200
+
+/** 消息/请求标识：与会话标识同族字符集，放宽长度（服务端形如 msg_…）。 */
+export function validateAgentMessageId(value: unknown): string {
+  if (typeof value !== 'string' || !AGENT_MESSAGE_ID_PATTERN.test(value)) {
+    throw new Error('消息标识无效')
+  }
+  return value
+}
+
+/** 审批动作：只认服务端枚举的三个字面量。 */
+export function validatePermissionReply(value: unknown): PermissionReply {
+  if (typeof value !== 'string' || !PERMISSION_REPLIES.includes(value)) {
+    throw new Error('审批动作无效')
+  }
+  return value as PermissionReply
+}
+
+/** 问答答案：选中的选项标签数组，1–8 个。 */
+export function validateQuestionAnswers(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > QUESTION_ANSWERS_MAX) {
+    throw new Error('问答选项无效')
+  }
+  return value.map(entry => {
+    if (typeof entry !== 'string' || entry === '' || entry.length > QUESTION_ANSWER_MAX_CHARS) {
+      throw new Error('问答选项无效')
+    }
+    return entry
+  })
+}
+
+/** 服务端事件块：type 原样透出，data 优先按 JSON 解析（与直连客户端同一套）。 */
+export function validateAgentEvent(value: unknown): AgentEvent {
+  const record = asRecord(value, 'Agent 事件')
+  const type = typeof record.type === 'string' && record.type !== '' ? record.type : 'message'
+  let data: unknown = record.data
+  if (typeof data === 'string') {
+    try {
+      data = JSON.parse(data)
+    } catch {
+      // 非 JSON 载荷原样透出。
+    }
+  }
+  return { type, data: data ?? null }
 }
 
 /** 会话标识：opencode 形态（字母数字 + 下划线/连字符，64 以内）。 */

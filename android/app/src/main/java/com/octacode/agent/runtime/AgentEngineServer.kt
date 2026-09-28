@@ -33,6 +33,10 @@ class AgentEngineServer(private val store: RuntimeStore) {
     private var port: Int = DEFAULT_PORT
     /** 本次启动的服务密码：只活在内存里，停服即清零，绝不落盘、不进 argv。 */
     private var serverPassword: String? = null
+    /** 事件流：监听器、泵线程与当前连接；停服时一并收掉。 */
+    private var eventListener: ((String) -> Unit)? = null
+    private var eventThread: Thread? = null
+    private var eventConnection: HttpURLConnection? = null
 
     /** 只读快照：进程在位且端口能通才算运行中；顺手收敛意外死亡的进程。 */
     fun state(): AgentEngineState = synchronized(lock) {
@@ -47,6 +51,141 @@ class AgentEngineServer(private val store: RuntimeStore) {
             port = port,
             baseUrl = if (reachable) "http://127.0.0.1:$port" else null,
         )
+    }
+
+    /**
+     * 事件流订阅：`GET /event`（SSE）常驻一根后台线程，逐块转成
+     * `{"type","data"}` 紧凑 JSON 交给 listener（插件侧再转成 Capacitor 事件）。
+     *
+     * 思考过程、工具调用、审批请求都走这条总线——轮询看不到“正在发生”，
+     * 流能。断线 3 秒重连；服务停了线程自己退出。重复订阅是幂等的
+     * （先停旧线程再起新的，不会分叉）。
+     */
+    fun startEventStream(listener: (String) -> Unit) {
+        synchronized(lock) {
+            stopEventStreamLocked()
+            val current = process
+            val password = serverPassword
+            if (current?.isAlive != true || password == null || !isReachable(port)) {
+                throw RuntimeFailure("AGENT_ENGINE_STOPPED", "Agent 服务未运行，请先启动")
+            }
+            eventListener = listener
+            val thread = Thread({ eventLoop(password) }, "agent-engine-events")
+            thread.isDaemon = true
+            eventThread = thread
+            thread.start()
+        }
+    }
+
+    fun stopEventStream() {
+        synchronized(lock) {
+            stopEventStreamLocked()
+        }
+    }
+
+    private fun stopEventStreamLocked() {
+        eventListener = null
+        eventThread?.interrupt()
+        try {
+            eventConnection?.disconnect()
+        } catch (_: Throwable) {
+            // 断开一个已经半死的连接：本来就是清理动作。
+        }
+        eventConnection = null
+        eventThread = null
+    }
+
+    private fun eventLoop(password: String) {
+        while (!Thread.currentThread().isInterrupted) {
+            var connection: HttpURLConnection? = null
+            try {
+                synchronized(lock) {
+                    if (eventListener == null || process?.isAlive != true) return
+                }
+                connection = URL("http://127.0.0.1:$port/event").openConnection() as HttpURLConnection
+                connection.connectTimeout = PROBE_TIMEOUT_MILLIS
+                connection.readTimeout = 0
+                connection.instanceFollowRedirects = false
+                connection.setRequestProperty("Accept", "text/event-stream")
+                val basic = Base64.getEncoder().encodeToString("opencode:$password".toByteArray(Charsets.UTF_8))
+                connection.setRequestProperty("Authorization", "Basic $basic")
+                synchronized(lock) {
+                    if (eventListener == null) {
+                        connection.disconnect()
+                        return
+                    }
+                    eventConnection = connection
+                }
+                if (connection.responseCode !in 200..299) {
+                    throw RuntimeException("event stream HTTP ${connection.responseCode}")
+                }
+                pumpEvents(connection)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return
+            } catch (_: Throwable) {
+                // 断线/服务抖动：3 秒后重连；调用方 stop 会中断睡眠。
+            } finally {
+                try {
+                    connection?.disconnect()
+                } catch (_: Throwable) {
+                }
+                synchronized(lock) {
+                    if (eventConnection === connection) eventConnection = null
+                }
+            }
+            try {
+                Thread.sleep(EVENT_RECONNECT_MILLIS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return
+            }
+        }
+    }
+
+    /** 逐行拼块：空行分块，`event:` 取名（缺省 message），`data:` 可多行。 */
+    private fun pumpEvents(connection: HttpURLConnection) {
+        val reader = connection.inputStream.bufferedReader(Charsets.UTF_8)
+        var type = "message"
+        val data = StringBuilder()
+        var hasData = false
+        while (!Thread.currentThread().isInterrupted) {
+            val line = try {
+                reader.readLine()
+            } catch (_: Throwable) {
+                return
+            } ?: return
+            if (line.isEmpty()) {
+                if (hasData) {
+                    emitEvent(type, data.toString())
+                    type = "message"
+                    data.clear()
+                    hasData = false
+                }
+                continue
+            }
+            if (line.startsWith(":")) continue
+            if (line.startsWith("event:")) {
+                val name = line.removePrefix("event:").trim()
+                if (name.isNotEmpty()) type = name
+            } else if (line.startsWith("data:")) {
+                if (hasData) data.append('\n')
+                data.append(line.removePrefix("data:").removePrefix(" "))
+                hasData = true
+            }
+        }
+    }
+
+    private fun emitEvent(type: String, raw: String) {
+        val listener = synchronized(lock) { eventListener } ?: return
+        val trimmed = raw.trim()
+        // 服务端 data 本来就是 JSON：原样嵌入避免二次转义；纯文本才加引号。
+        val data = if (trimmed.startsWith("{") || trimmed.startsWith("[")) trimmed else jsonQuote(raw)
+        try {
+            listener("{\"type\":" + jsonQuote(type) + ",\"data\":" + data + "}")
+        } catch (_: Throwable) {
+            // 监听方异常不能掐断整条流。
+        }
     }
 
     /**
@@ -112,6 +251,109 @@ class AgentEngineServer(private val store: RuntimeStore) {
 
     fun chatHistory(sessionId: String): String = synchronized(lock) {
         return relay("GET", "/session/" + requireSessionId(sessionId) + "/message", null)
+    }
+
+    /**
+     * 中止本轮运行：`POST /session/{id}/abort`，无请求体，成功返回布尔。
+     *
+     * 界面在发送中/跟随中把发送键换成停止键，点下即调这里并停掉轮询——
+     * 这正是旗舰边框“真结束才灭”的另一半：中断是明确的结束。
+     */
+    fun chatAbort(sessionId: String): String = synchronized(lock) {
+        return relay("POST", "/session/" + requireSessionId(sessionId) + "/abort", null)
+    }
+
+    /**
+     * 从某条消息分叉新会话：`POST /session/{id}/fork {messageID}`。
+     *
+     * 界面用它实现“重新生成”语义：找到最后一条用户消息，从那里另起一局，
+     * 原会话原样保留。messageID 形态与会话标识同族，另行收紧长度。
+     */
+    fun chatFork(sessionId: String, messageId: String): String = synchronized(lock) {
+        if (!ID_PATTERN.matches(messageId)) {
+            throw RuntimeFailure("SETTINGS_INVALID", "消息标识无效")
+        }
+        return relay("POST", "/session/" + requireSessionId(sessionId) + "/fork", "{\"messageID\":" + jsonQuote(messageId) + "}")
+    }
+
+    /**
+     * 权限审批：`POST /api/session/:sid/permission/:rid/reply {reply, message?}`。
+     *
+     * reply 只认 `once` / `always` / `reject`（服务端 PermissionV2.Reply 枚举），
+     * message 可选说明。成功 204 无内容——relay 把空包转成 `null` 交给界面。
+     */
+    fun permissionReply(sessionId: String, requestId: String, reply: String, message: String?): String =
+        synchronized(lock) {
+            if (reply != "once" && reply != "always" && reply != "reject") {
+                throw RuntimeFailure("SETTINGS_INVALID", "审批动作无效")
+            }
+            val body = buildString {
+                append("{\"reply\":")
+                append(jsonQuote(reply))
+                if (!message.isNullOrEmpty()) {
+                    if (message.length > MAX_CHAT_TEXT_CHARS) {
+                        throw RuntimeFailure("SETTINGS_INVALID", "审批说明过长")
+                    }
+                    append(",\"message\":")
+                    append(jsonQuote(message))
+                }
+                append('}')
+            }
+            return relay(
+                "POST",
+                "/api/session/" + requireSessionId(sessionId) + "/permission/" + requireRequestId(requestId) + "/reply",
+                body,
+            )
+        }
+
+    /**
+     * 问答审批：`POST .../question/:rid/reply {answers: [...]}`，
+     * 拒绝走 `POST .../reject`（无请求体）。
+     *
+     * answers 是选中的选项标签数组（服务端按 label 匹配），1–8 个。
+     */
+    fun questionReply(sessionId: String, requestId: String, answers: List<String>): String =
+        synchronized(lock) {
+            if (answers.isEmpty() || answers.size > MAX_ANSWERS) {
+                throw RuntimeFailure("SETTINGS_INVALID", "问答选项无效")
+            }
+            val body = buildString {
+                append("{\"answers\":[")
+                answers.forEachIndexed { index, answer ->
+                    if (answer.isEmpty() || answer.length > MAX_ANSWER_CHARS) {
+                        throw RuntimeFailure("SETTINGS_INVALID", "问答选项无效")
+                    }
+                    if (index > 0) append(',')
+                    append(jsonQuote(answer))
+                }
+                append("]}")
+            }
+            return relay(
+                "POST",
+                "/api/session/" + requireSessionId(sessionId) + "/question/" + requireRequestId(requestId) + "/reply",
+                body,
+            )
+        }
+
+    fun questionReject(sessionId: String, requestId: String): String = synchronized(lock) {
+        return relay(
+            "POST",
+            "/api/session/" + requireSessionId(sessionId) + "/question/" + requireRequestId(requestId) + "/reject",
+            null,
+        )
+    }
+
+    /** 待答问题：`GET /api/session/:sid/question` 原文透传，解析在前端做。 */
+    fun questionList(sessionId: String): String = synchronized(lock) {
+        return relay("GET", "/api/session/" + requireSessionId(sessionId) + "/question", null)
+    }
+
+    /**
+     * 待批权限全局 feed：`GET /api/permission/request` 原文透传，
+     * 前端按 sessionID 过滤出本会话的。没有按会话查的端点，这是唯一的待批来源。
+     */
+    fun permissionFeed(): String = synchronized(lock) {
+        return relay("GET", "/api/permission/request", null)
     }
 
     fun chatSend(sessionId: String, text: String): String = synchronized(lock) {
@@ -360,6 +602,13 @@ class AgentEngineServer(private val store: RuntimeStore) {
         return sessionId
     }
 
+    private fun requireRequestId(requestId: String): String {
+        if (!ID_PATTERN.matches(requestId)) {
+            throw RuntimeFailure("SETTINGS_INVALID", "请求标识无效")
+        }
+        return requestId
+    }
+
     /** 模型标识 `provider/model`：两段各含至少一个字母数字，纯符号组合不过。 */
     private fun isModelId(value: String): Boolean {
         val segments = value.split('/')
@@ -386,6 +635,7 @@ class AgentEngineServer(private val store: RuntimeStore) {
     private fun stopLocked() {
         val current = process
         process = null
+        stopEventStreamLocked()
         if (current != null && current.isAlive) {
             current.destroy()
             try {
@@ -492,12 +742,17 @@ class AgentEngineServer(private val store: RuntimeStore) {
         private const val START_TIMEOUT_MILLIS = 60_000L
         private const val PROBE_INTERVAL_MILLIS = 200L
         private const val PROBE_TIMEOUT_MILLIS = 1_500
+        private const val EVENT_RECONNECT_MILLIS = 3_000L
         private const val RELAY_TIMEOUT_MILLIS = 15_000
         private const val MAX_CHAT_TEXT_CHARS = 32_000
         private const val MAX_CHAT_PARTS = 8
         private const val MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
         private const val MAX_STAGE_ATTEMPTS = 100
         private val SESSION_ID_PATTERN = Regex("^[A-Za-z0-9_-]{1,64}$")
+        /** 消息/请求标识：与会话标识同族字符集，放宽长度（服务端形如 msg_…）。 */
+        private val ID_PATTERN = Regex("^[A-Za-z0-9_.-]{1,128}$")
+        private const val MAX_ANSWERS = 8
+        private const val MAX_ANSWER_CHARS = 200
         /** 模型标识段字符集（`provider` / `model` 各一段）。 */
         private val MODEL_ID_SEGMENT = Regex("^[A-Za-z0-9_.-]{1,64}$")
         private val MODEL_ID_ALNUM = Regex("[A-Za-z0-9]")

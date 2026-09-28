@@ -18,7 +18,7 @@ describe('agentChat parsers', () => {
   it('parseMessageList 跳过非法条目不断流', () => {
     expect(
       parseMessageList([{ role: 'user', parts: [{ type: 'text', text: 'hi' }] }, { role: 'system' }]),
-    ).toEqual([{ id: '', role: 'user', text: 'hi', attachments: [] }])
+    ).toEqual([{ id: '', role: 'user', text: 'hi', attachments: [], reasoning: [] }])
   })
 })
 
@@ -38,7 +38,7 @@ describe('createNativeAgentChat', () => {
     await expect(chat.listSessions()).resolves.toEqual([{ id: 's1', title: 't' }])
     await expect(chat.createSession('hi')).resolves.toEqual({ id: 's2', title: '未命名会话' })
     await expect(chat.createSession('hi', 'anthropic/x', 'max')).resolves.toEqual({ id: 's2', title: '未命名会话' })
-    await expect(chat.listMessages('s1')).resolves.toEqual([{ id: '', role: 'user', text: '', attachments: [] }])
+    await expect(chat.listMessages('s1')).resolves.toEqual([{ id: '', role: 'user', text: '', attachments: [], reasoning: [] }])
     await expect(chat.sendMessage('s1', 'hi')).resolves.toBeUndefined()
   })
 
@@ -64,6 +64,52 @@ describe('createNativeAgentChat', () => {
       dataBase64: 'aGk=',
     })
   })
+
+  it('中止/分叉/审批透传并归一化', async () => {
+    const calls: string[] = []
+    const bridge = stubBridge({
+      agentChatAbort: () => {
+        calls.push('abort')
+        return Promise.resolve({ json: 'true' })
+      },
+      agentChatFork: () => {
+        calls.push('fork')
+        return Promise.resolve({ json: '{"id":"s9","title":"fork"}' })
+      },
+      agentPermissionReply: () => {
+        calls.push('permission')
+        return Promise.resolve({ json: 'null' })
+      },
+      agentQuestionReply: () => {
+        calls.push('question-reply')
+        return Promise.resolve({ json: 'null' })
+      },
+      agentQuestionReject: () => {
+        calls.push('question-reject')
+        return Promise.resolve({ json: 'true' })
+      },
+      agentQuestionList: () =>
+        Promise.resolve({ json: '[{"id":"q1","sessionID":"s1","questions":[]}]' }),
+      agentPermissionFeed: () =>
+        Promise.resolve({ json: '[{"id":"p1","sessionID":"s1","action":"edit"}]' }),
+      startAgentEventStream: () => Promise.resolve(undefined),
+      stopAgentEventStream: () => Promise.resolve(undefined),
+      addAgentEventListener: () => Promise.resolve({ remove: () => Promise.resolve(undefined) }),
+    })
+    const chat = createNativeAgentChat(bridge)
+    await chat.abortSession('s1')
+    await expect(chat.forkSession('s1', 'm1')).resolves.toEqual({ id: 's9', title: 'fork' })
+    await chat.replyPermission('s1', 'p1', 'once')
+    await chat.replyQuestion('s1', 'q1', ['是'])
+    await chat.rejectQuestion('s1', 'q1')
+    await expect(chat.listQuestions('s1')).resolves.toEqual([{ id: 'q1', sessionId: 's1', questions: [] }])
+    await expect(chat.permissionFeed('s1')).resolves.toEqual([
+      { id: 'p1', sessionId: 's1', action: 'edit', resources: [] },
+    ])
+    const stop = await chat.subscribeEvents(() => undefined)
+    stop()
+    expect(calls).toEqual(['abort', 'fork', 'permission', 'question-reply', 'question-reject'])
+  })
 })
 
 describe('attachment helpers', () => {
@@ -87,10 +133,10 @@ describe('attachment helpers', () => {
 describe('pollUntilSettled', () => {
   it('连续两次快照一致即停', async () => {
     const snapshots: ChatMessage[][] = [
-      [{ id: 'a', role: 'user', text: 'hi', attachments: [] }],
+      [{ id: 'a', role: 'user', text: 'hi', attachments: [], reasoning: [] }],
       [
-        { id: 'a', role: 'user', text: 'hi', attachments: [] },
-        { id: 'b', role: 'assistant', text: 'hello', attachments: [] },
+        { id: 'a', role: 'user', text: 'hi', attachments: [], reasoning: [] },
+        { id: 'b', role: 'assistant', text: 'hello', attachments: [], reasoning: [] },
       ],
     ]
     let calls = 0
@@ -106,7 +152,7 @@ describe('pollUntilSettled', () => {
 
   it('超时返回最后一次快照', async () => {
     const listMessages = vi.fn(
-      (): Promise<ChatMessage[]> => Promise.resolve([{ id: 'a', role: 'user', text: 'n', attachments: [] }]),
+      (): Promise<ChatMessage[]> => Promise.resolve([{ id: 'a', role: 'user', text: 'n', attachments: [], reasoning: [] }]),
     )
     const result = await pollUntilSettled(listMessages, { intervalMs: 1, maxRounds: 3 })
     expect(result).toHaveLength(1)

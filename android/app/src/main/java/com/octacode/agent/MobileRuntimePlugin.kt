@@ -584,6 +584,121 @@ class MobileRuntimePlugin : Plugin() {
         }
     }
 
+    /**
+     * 权限：应用内桥接。
+     * 中止本轮运行（`POST /session/{id}/abort`）：发送中/跟随中把发送键换成停止键，
+     * 点下即调这里并停掉轮询。返回原文（布尔）。
+     */
+    @PluginMethod
+    fun agentChatAbort(call: PluginCall) {
+        execute(call) {
+            val sessionId = call.getString("sessionId")?.trim().orEmpty()
+            JSObject().put("json", controller.agentChatAbort(sessionId))
+        }
+    }
+
+    /**
+     * 权限：应用内桥接。
+     * 从某条消息分叉新会话（`POST /session/{id}/fork {messageID}`）：实现“重新生成”
+     * 语义，原会话原样保留。返回新会话原文。
+     */
+    @PluginMethod
+    fun agentChatFork(call: PluginCall) {
+        execute(call) {
+            val sessionId = call.getString("sessionId")?.trim().orEmpty()
+            val messageId = call.getString("messageId")?.trim().orEmpty()
+            JSObject().put("json", controller.agentChatFork(sessionId, messageId))
+        }
+    }
+
+    /**
+     * 权限：应用内桥接。
+     * 权限审批（`once` / `always` / `reject`）：决策直达服务端枚举，
+     * 界面不翻译、不合并。返回 204 空包（转 `null`）。
+     */
+    @PluginMethod
+    fun agentPermissionReply(call: PluginCall) {
+        execute(call) {
+            val sessionId = call.getString("sessionId")?.trim().orEmpty()
+            val requestId = call.getString("requestId")?.trim().orEmpty()
+            val reply = call.getString("reply")?.trim().orEmpty()
+            val message = call.getString("message")
+            JSObject().put("json", controller.agentPermissionReply(sessionId, requestId, reply, message))
+        }
+    }
+
+    /**
+     * 权限：应用内桥接。
+     * 问答审批：answers 是选中的选项标签数组；reject 另走无请求体端点。
+     */
+    @PluginMethod
+    fun agentQuestionReply(call: PluginCall) {
+        execute(call) {
+            val sessionId = call.getString("sessionId")?.trim().orEmpty()
+            val requestId = call.getString("requestId")?.trim().orEmpty()
+            val raw = call.getArray("answers")
+                ?: throw RuntimeFailure("SETTINGS_INVALID", "问答选项无效")
+            val answers = (0 until raw.length()).map { index ->
+                raw.getString(index)
+                    ?: throw RuntimeFailure("SETTINGS_INVALID", "问答选项无效")
+            }
+            JSObject().put("json", controller.agentQuestionReply(sessionId, requestId, answers))
+        }
+    }
+
+    @PluginMethod
+    fun agentQuestionReject(call: PluginCall) {
+        execute(call) {
+            val sessionId = call.getString("sessionId")?.trim().orEmpty()
+            val requestId = call.getString("requestId")?.trim().orEmpty()
+            JSObject().put("json", controller.agentQuestionReject(sessionId, requestId))
+        }
+    }
+
+    /**
+     * 权限：应用内桥接。
+     * 待答问题与待批权限：原文透传，前端过滤本会话。审批卡片的数据源
+     * （SSE 为主、轮询兜底）都从这里取。
+     */
+    @PluginMethod
+    fun agentQuestionList(call: PluginCall) {
+        execute(call) {
+            val sessionId = call.getString("sessionId")?.trim().orEmpty()
+            JSObject().put("json", controller.agentQuestionList(sessionId))
+        }
+    }
+
+    @PluginMethod
+    fun agentPermissionFeed(call: PluginCall) {
+        execute(call) {
+            JSObject().put("json", controller.agentPermissionFeed())
+        }
+    }
+
+    /**
+     * 权限：应用内桥接。
+     * 事件流开关：订阅后服务端 `/event` 的每一块以 `agentEvent` 事件
+     * （`{json: {type, data}}`）送到 Web 侧；停服/显式停止时自动断开。
+     */
+    @PluginMethod
+    fun startAgentEventStream(call: PluginCall) {
+        execute(call) {
+            controller.startAgentEventStream { json ->
+                notifyListeners("agentEvent", JSObject().put("json", json))
+            }
+            JSObject()
+        }
+    }
+
+    @PluginMethod
+    fun stopAgentEventStream(call: PluginCall) {
+        execute(call) {
+            controller.stopAgentEventStream()
+            JSObject()
+        }
+    }
+    }
+
     @PluginMethod
     fun getSettings(call: PluginCall) {
         resolveWhileActive(call) { controller.store.settings().toJs() }

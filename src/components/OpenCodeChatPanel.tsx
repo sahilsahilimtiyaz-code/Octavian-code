@@ -1,5 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { FileText, Image, Loader2, Paperclip, Plus, Power, RefreshCw, SendHorizontal, SquareTerminal, X } from 'lucide-react'
+import {
+  Check,
+  FileText,
+  GitFork,
+  Image,
+  Loader2,
+  Paperclip,
+  Plus,
+  Power,
+  RefreshCw,
+  SendHorizontal,
+  Square,
+  SquareTerminal,
+  X,
+} from 'lucide-react'
 import {
   ATTACHMENT_MAX_BYTES,
   ATTACHMENT_MAX_PER_MESSAGE,
@@ -14,7 +28,15 @@ import {
 } from '../agentChat'
 import { t } from '../i18n'
 import type { ChatAttachment, ChatMessage, OpenCodeSession } from '../opencodeClient'
-import type { AgentChatPart, AgentEngineServerState, AgentModelOption, RuntimeBridge } from '../platform/types'
+import type {
+  AgentChatPart,
+  AgentEngineServerState,
+  AgentEvent,
+  AgentModelOption,
+  AgentPermissionRequest,
+  AgentQuestionRequest,
+  RuntimeBridge,
+} from '../platform/types'
 import { validateAttachmentMime } from '../platform/validation'
 
 interface OpenCodeChatPanelProps {
@@ -100,6 +122,12 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
   const [selectedModel, setSelectedModel] = useState<string>(() => readDefaultModelId())
   const [selectedVariant, setSelectedVariant] = useState<string>(() => readDefaultVariant())
   const [sessionModels, setSessionModels] = useState<Record<string, string>>({})
+  const [permissions, setPermissions] = useState<AgentPermissionRequest[]>([])
+  const [questions, setQuestions] = useState<AgentQuestionRequest[]>([])
+  const [approvalsBusy, setApprovalsBusy] = useState<string | null>(null)
+  const [pickedAnswers, setPickedAnswers] = useState<Record<string, string[]>>({})
+  const [stopping, setStopping] = useState(false)
+  const [forking, setForking] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
   const cancelled = useRef(false)
 
@@ -327,6 +355,79 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
     })
   }, [messages, server?.running, transport, thumbs, thumbFailed])
 
+  const refreshApprovals = useCallback(
+    (sessionId: string) => {
+      void transport.listQuestions(sessionId).then(
+        value => {
+          if (!cancelled.current) setQuestions(value)
+        },
+        () => {
+          // 待答轮询失败不炸出横幅：审批卡片缺席比满屏报错好，下轮再试。
+        },
+      )
+      void transport.permissionFeed(sessionId).then(
+        value => {
+          if (!cancelled.current) setPermissions(value)
+        },
+        () => undefined,
+      )
+    },
+    [transport],
+  )
+
+  const handleAgentEvent = useCallback(
+    (event: AgentEvent) => {
+      // 审批与问答事件立刻拉一次卡片；其它事件在跟随时顺手刷新一次消息表。
+      if (event.type.includes('permission') || event.type.includes('question')) {
+        if (activeId !== null) refreshApprovals(activeId)
+        return
+      }
+      if (activeId !== null && (sending || following)) {
+        void transport.listMessages(activeId).then(
+          value => {
+            if (!cancelled.current) setMessages(value)
+          },
+          () => undefined,
+        )
+      }
+    },
+    [activeId, refreshApprovals, sending, following, transport],
+  )
+
+  useEffect(() => {
+    if (server?.running !== true || !supported) return
+    let stop: (() => void) | undefined
+    let done = false
+    void transport
+      .subscribeEvents(event => {
+        if (!done) handleAgentEvent(event)
+      })
+      .then(
+        closer => {
+          if (cancelled.current || done) {
+            closer()
+            return
+          }
+          stop = closer
+        },
+        () => undefined,
+      )
+    return () => {
+      done = true
+      stop?.()
+    }
+  }, [server?.running, supported, transport, handleAgentEvent])
+
+  // 跟随期间顺带轮询审批（SSE 万一没通，卡片最多晚几秒出现，不会永远缺席）。
+  useEffect(() => {
+    if (activeId === null || (!sending && !following)) return
+    refreshApprovals(activeId)
+    const timer = window.setInterval(() => {
+      if (!cancelled.current) refreshApprovals(activeId)
+    }, 4000)
+    return () => window.clearInterval(timer)
+  }, [activeId, sending, following, refreshApprovals])
+
   const createSession = () => {
     setCreating(true)
     setChatError(null)
@@ -392,6 +493,125 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
           )
         },
       )
+  }
+
+  const busy = sending || following
+
+  /** 停止本轮：先让服务端 abort，再停掉本地的跟随轮询，两侧都停才算真停。 */
+  const stopRun = () => {
+    if (activeId === null || (!sending && !following) || stopping) return
+    setStopping(true)
+    void transport.abortSession(activeId).then(
+      () => {
+        if (cancelled.current) return
+        setStopping(false)
+        setSending(false)
+        setFollowing(false)
+        refreshMessages(activeId)
+      },
+      error => {
+        if (cancelled.current) return
+        setStopping(false)
+        setSending(false)
+        setFollowing(false)
+        setChatError(errorMessage(error))
+      },
+    )
+  }
+
+  /** 从最后一条用户消息分叉：原会话保留，新会话接管继续。 */
+  const forkSession = () => {
+    if (activeId === null || forking || sending || following) return
+    const lastUser = [...messages].reverse().find(message => message.role === 'user' && message.id !== '')
+    if (lastUser === undefined) {
+      setChatError(t('没有可分叉的用户消息。'))
+      return
+    }
+    setForking(true)
+    setChatError(null)
+    void transport.forkSession(activeId, lastUser.id).then(
+      session => {
+        if (cancelled.current) return
+        setForking(false)
+        setSessions(previous => [session, ...previous])
+        setActiveId(session.id)
+      },
+      error => {
+        if (cancelled.current) return
+        setForking(false)
+        setChatError(errorMessage(error))
+      },
+    )
+  }
+
+  const replyPermission = (requestId: string, reply: 'once' | 'always' | 'reject') => {
+    if (activeId === null) return
+    const key = `permission:${requestId}`
+    setApprovalsBusy(key)
+    void transport.replyPermission(activeId, requestId, reply).then(
+      () => {
+        if (cancelled.current) return
+        setApprovalsBusy(null)
+        refreshApprovals(activeId)
+      },
+      error => {
+        if (cancelled.current) return
+        setApprovalsBusy(null)
+        setChatError(errorMessage(error))
+      },
+    )
+  }
+
+  const toggleAnswer = (key: string, label: string) => {
+    setPickedAnswers(previous => {
+      const current = previous[key] ?? []
+      return {
+        ...previous,
+        [key]: current.includes(label) ? current.filter(item => item !== label) : [...current, label],
+      }
+    })
+  }
+
+  const submitAnswers = (requestId: string, questionIndex: number) => {
+    if (activeId === null) return
+    const key = `${requestId}:${questionIndex}`
+    const answers = pickedAnswers[key] ?? []
+    if (answers.length === 0) {
+      setChatError(t('请先勾选至少一个选项。'))
+      return
+    }
+    const busyKey = `question:${key}`
+    setApprovalsBusy(busyKey)
+    void transport.replyQuestion(activeId, requestId, answers).then(
+      () => {
+        if (cancelled.current) return
+        setApprovalsBusy(null)
+        refreshApprovals(activeId)
+      },
+      error => {
+        if (cancelled.current) return
+        setApprovalsBusy(null)
+        setChatError(errorMessage(error))
+      },
+    )
+  }
+
+  const rejectQuestion = (requestId: string) => {
+    if (activeId === null) return
+    const busyKey = `question-reject:${requestId}`
+    setApprovalsBusy(busyKey)
+    void transport.rejectQuestion(activeId, requestId).then(
+      () => {
+        if (cancelled.current) return
+        setApprovalsBusy(null)
+        refreshApprovals(activeId)
+      },
+      error => {
+        if (cancelled.current) return
+        setApprovalsBusy(null)
+        setChatError(errorMessage(error))
+      },
+    )
   }
 
   if (!installed) {
@@ -487,6 +707,15 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
             <button className="button button-secondary compact-button" type="button" onClick={createSession} disabled={creating}>
               {creating ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}{t('新会话')}
             </button>
+            <button
+              className="button button-secondary compact-button"
+              type="button"
+              onClick={forkSession}
+              disabled={forking || sending || following || activeId === null}
+              title={t('从最后一条用户消息分叉出新会话，原会话保留')}
+            >
+              {forking ? <Loader2 className="spin" size={16} /> : <GitFork size={16} />}{t('分叉')}
+            </button>
             {loading && <span className="settings-note">{t('正在读取会话')}</span>}
             {sessions.map(session => (
               <button
@@ -511,6 +740,89 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
             </div>
           )}
 
+          {(permissions.length > 0 || questions.length > 0) && (
+            <section className="chat-approvals" aria-label={t('待审批')}>
+              {permissions.map(request => (
+                <div className="approval-card" key={`permission:${request.id}`}>
+                  <div className="approval-title">{t('权限审批')}</div>
+                  <div className="approval-detail">{request.action}</div>
+                  {request.resources.length > 0 && (
+                    <div className="approval-resources">{request.resources.join(' · ')}</div>
+                  )}
+                  <div className="approval-actions">
+                    <button
+                      className="button button-secondary compact-button"
+                      type="button"
+                      disabled={approvalsBusy !== null}
+                      onClick={() => replyPermission(request.id, 'once')}
+                    >
+                      {approvalsBusy === `permission:${request.id}` ? <Loader2 className="spin" size={16} /> : <Check size={16} />}{t('仅一次')}
+                    </button>
+                    <button
+                      className="button button-secondary compact-button"
+                      type="button"
+                      disabled={approvalsBusy !== null}
+                      onClick={() => replyPermission(request.id, 'always')}
+                    >
+                      {t('始终允许')}
+                    </button>
+                    <button
+                      className="button button-danger-quiet compact-button"
+                      type="button"
+                      disabled={approvalsBusy !== null}
+                      onClick={() => replyPermission(request.id, 'reject')}
+                    >
+                      {t('拒绝')}
+                    </button>
+                  </div>
+                </div>
+              ))}
+              {questions.map(request => (
+                <div className="approval-card" key={`question:${request.id}`}>
+                  {request.questions.map((question, questionIndex) => {
+                    const key = `${request.id}:${questionIndex}`
+                    const picked = pickedAnswers[key] ?? []
+                    return (
+                      <div className="approval-question" key={key}>
+                        {question.header !== '' && <div className="approval-title">{question.header}</div>}
+                        {question.question !== '' && <div className="approval-detail">{question.question}</div>}
+                        {question.options.map(option => (
+                          <label className="approval-option" key={option.label}>
+                            <input
+                              type="checkbox"
+                              checked={picked.includes(option.label)}
+                              onChange={() => toggleAnswer(key, option.label)}
+                            />
+                            <span>{option.label}</span>
+                            {option.description !== '' && <small>{option.description}</small>}
+                          </label>
+                        ))}
+                        <div className="approval-actions">
+                          <button
+                            className="button button-primary compact-button"
+                            type="button"
+                            disabled={approvalsBusy !== null || picked.length === 0}
+                            onClick={() => submitAnswers(request.id, questionIndex)}
+                          >
+                            {approvalsBusy === `question:${key}` ? <Loader2 className="spin" size={16} /> : <Check size={16} />}{t('提交答案')}
+                          </button>
+                          <button
+                            className="button button-secondary compact-button"
+                            type="button"
+                            disabled={approvalsBusy !== null}
+                            onClick={() => rejectQuestion(request.id)}
+                          >
+                            {t('拒绝')}
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              ))}
+            </section>
+          )}
+
           <section className="chat-transcript" aria-live="polite" aria-label={t('对话')}>
             {activeId !== null && sessionModels[activeId] !== undefined && (
               <p className="settings-note">{t('当前会话模型：')}{sessionModels[activeId]}</p>
@@ -518,6 +830,14 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
             {messages.map((message, index) => (
               <div key={message.id !== '' ? message.id : `m${index}`} className={message.role === 'user' ? 'chat-message user message-in' : 'chat-message assistant message-in'}>
                 <div className="chat-bubble">
+                  {message.reasoning.length > 0 && (
+                    <details className="chat-reasoning">
+                      <summary>{t('思考过程')}</summary>
+                      {message.reasoning.map((thought, thoughtIndex) => (
+                        <p key={thoughtIndex}>{thought}</p>
+                      ))}
+                    </details>
+                  )}
                   {message.text === '' && message.attachments.length === 0 ? t('(空消息)') : message.text}
                   {message.attachments.length > 0 && (
                     <span className="chat-attachments">
@@ -558,7 +878,7 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
               ))}
             </div>
           )}
-          <div className="chat-composer">
+          <div className={busy ? 'chat-composer busy' : 'chat-composer'}>
             <input
               ref={fileInput}
               type="file"
@@ -591,16 +911,23 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
               }}
               placeholder={t('输入消息，回车发送')}
               aria-label={t('输入消息')}
-              disabled={activeId === null || sending}
+              disabled={activeId === null || busy}
             />
             <button
               className="button button-primary"
               type="button"
-              onClick={send}
-              disabled={activeId === null || (composer.trim() === '' && staged.length === 0) || sending}
-              aria-label={t('发送')}
+              onClick={busy ? stopRun : send}
+              disabled={activeId === null || stopping || staging || (!busy && composer.trim() === '' && staged.length === 0)}
+              aria-label={busy ? t('停止') : t('发送')}
+              title={busy ? t('中止本轮运行') : undefined}
             >
-              {sending ? <Loader2 className="spin" size={18} /> : <SendHorizontal size={18} />}
+              {busy ? (
+                stopping ? <Loader2 className="spin" size={18} /> : <Square size={18} />
+              ) : staging ? (
+                <Loader2 className="spin" size={18} />
+              ) : (
+                <SendHorizontal size={18} />
+              )}
             </button>
           </div>
           <p className="settings-note">{t('模型用 OpenCode 自己的登录（终端运行 opencode auth login）；供应商 Key 与 Harness 不互通。')}</p>

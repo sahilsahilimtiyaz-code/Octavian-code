@@ -1704,6 +1704,221 @@ button:disabled {
   box-shadow: var(--glow-gold);
 }
 
+/*
+ * 自有输入行的旗舰边框：与上游 composer 同一调色、同一语义（忙时亮、闲时灭），
+ * 但状态完全自有——`.busy` 由面板的 sending/following 真实状态驱动，
+ * 发送即亮，跟随轮询判定本轮真结束才灭，中止同样灭。不碰输入行自身的
+ * 尺寸、圆角、背景与触摸目标：光环是两层 pointer-events:none 伪元素。
+ */
+.chat-composer {
+  position: relative;
+}
+
+.chat-composer.busy::before,
+.chat-composer.busy::after {
+  content: '';
+  position: absolute;
+  border-radius: var(--radius-control);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.45s ease;
+}
+
+.chat-composer.busy::before {
+  inset: 0;
+  padding: 2px;
+  background: conic-gradient(
+    from var(--chat-glow-angle, 0deg),
+    #1e3a8a 0%,
+    #2563eb 4%,
+    #22d3ee 8%,
+    #2dd4bf 11%,
+    #0b1220 14%,
+    #0b1220 17%,
+    #10b981 20%,
+    #a3e635 24%,
+    #facc15 27%,
+    #f59e0b 30%,
+    #0b1220 33%,
+    #0b1220 37%,
+    #fb923c 40%,
+    #ef4444 44%,
+    #ec4899 48%,
+    #f472b6 52%,
+    #a855f7 56%,
+    #8b5cf6 60%,
+    #0b1220 63%,
+    #0b1220 68%,
+    #e2e8f0 71%,
+    #ffffff 74%,
+    #94a3b8 77%,
+    #0b1220 80%,
+    #0b1220 85%,
+    #ffffff 87%,
+    #0b1220 89%,
+    #0b1220 94%,
+    #1e3a8a 97%,
+    #1e3a8a 100%
+  );
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  opacity: 1;
+  animation: chat-glow-travel 18s linear infinite;
+}
+
+.chat-composer.busy::after {
+  inset: -5px;
+  padding: 7px;
+  background: conic-gradient(
+    from var(--chat-glow-drift, 0deg),
+    #1d4ed8 0%,
+    #06b6d4 12%,
+    #0b1220 20%,
+    #34d399 30%,
+    #fbbf24 40%,
+    #0b1220 50%,
+    #ef4444 60%,
+    #e879f9 70%,
+    #818cf8 80%,
+    #0b1220 88%,
+    #f8fafc 92%,
+    #1d4ed8 100%
+  );
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  filter: blur(9px);
+  opacity: 0.4;
+  animation: chat-glow-drift 42s linear infinite;
+}
+
+@property --chat-glow-angle {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@property --chat-glow-drift {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@keyframes chat-glow-travel {
+  to {
+    --chat-glow-angle: 360deg;
+  }
+}
+
+@keyframes chat-glow-drift {
+  to {
+    --chat-glow-drift: -360deg;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-composer.busy::before,
+  .chat-composer.busy::after {
+    animation: none;
+  }
+}
+
+/* 审批卡片：权限与问答共用骨架，标题 + 明细 + 动作行。 */
+.chat-approvals {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.approval-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--gold-line);
+  border-radius: var(--radius-card);
+  background: var(--gold-soft);
+  animation: message-in 360ms var(--ease-luxe) backwards;
+}
+
+.approval-title {
+  font-size: 0.75rem;
+  font-weight: var(--weight-bold);
+  letter-spacing: 0.06em;
+  color: var(--gold-text);
+}
+
+.approval-detail {
+  font-size: 0.875rem;
+  color: var(--ink);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.approval-resources {
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  word-break: break-all;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.approval-question {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.approval-question + .approval-question {
+  padding-top: 8px;
+  border-top: 1px solid var(--gold-line);
+}
+
+.approval-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 0.8125rem;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.approval-option input {
+  margin-top: 2px;
+  accent-color: var(--gold-text);
+}
+
+.approval-option small {
+  color: var(--muted);
+}
+
+/* 思考过程：原生 details 折叠，无 JS 参与开合。 */
+.chat-reasoning {
+  margin-bottom: 8px;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.chat-reasoning summary {
+  cursor: pointer;
+  font-weight: var(--weight-semibold);
+}
+
+.chat-reasoning p {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  line-height: 1.6;
+}
+
 /* 附件与画廊：待发送 chips、消息内缩略图与文件条。 */
 .chat-staged {
   display: flex;

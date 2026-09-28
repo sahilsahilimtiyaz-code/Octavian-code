@@ -14,6 +14,8 @@ import {
   validateAgentChatText,
   validateAgentChatTitle,
   validateAgentEngineServerState,
+  validateAgentEvent,
+  validateAgentMessageId,
   validateAgentModelId,
   validateAgentServerPort,
   validateAgentSessionId,
@@ -23,6 +25,8 @@ import {
   validateAttachmentFileName,
   validateAttachmentGuestPath,
   validateAttachmentMime,
+  validatePermissionReply,
+  validateQuestionAnswers,
   validateStagedAttachment,
   validateAllFilesAccessResult,
   validateDiagnosticLogExport,
@@ -982,6 +986,30 @@ describe('Agent 聊天与附件校验', () => {
     expect(validateAgentVariant('max')).toBe('max')
     expect(() => validateAgentVariant('a b')).toThrow('模型档位无效')
     expect(() => validateAgentVariant('')).toThrow('模型档位无效')
+  })
+
+  it('审批动作只认服务端枚举，问答答案只认选项标签数组', () => {
+    expect(validatePermissionReply('once')).toBe('once')
+    expect(validatePermissionReply('always')).toBe('always')
+    expect(validatePermissionReply('reject')).toBe('reject')
+    for (const bad of ['allow', 'deny', '', null]) {
+      expect(() => validatePermissionReply(bad), String(bad)).toThrow('审批动作无效')
+    }
+    expect(validateQuestionAnswers(['是', '否'])).toEqual(['是', '否'])
+    for (const bad of [[], [''], [1], new Array(9).fill('x')]) {
+      expect(() => validateQuestionAnswers(bad), JSON.stringify(bad)).toThrow('问答选项无效')
+    }
+  })
+
+  it('消息标识与事件块形态', () => {
+    expect(validateAgentMessageId('msg_abc-123')).toBe('msg_abc-123')
+    expect(() => validateAgentMessageId('../x')).toThrow('消息标识无效')
+    expect(validateAgentEvent({ type: 'permission.v2.asked', data: '{"a":1}' })).toEqual({
+      type: 'permission.v2.asked',
+      data: { a: 1 },
+    })
+    expect(validateAgentEvent({ data: 'plain' })).toEqual({ type: 'message', data: 'plain' })
+    expect(() => validateAgentEvent(null)).toThrow()
   })
 
   it('分段只认文本与落点引用', () => {

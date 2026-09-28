@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { normalizeMessage, OpenCodeClient, parseAgentModels, parseSseBlock } from './opencodeClient'
+import {
+  normalizeMessage,
+  OpenCodeClient,
+  parseAgentModels,
+  parsePermissionFeed,
+  parseQuestionList,
+  parseSseBlock,
+} from './opencodeClient'
 
 function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status })
@@ -30,7 +37,7 @@ describe('normalizeMessage', () => {
           { type: 'text', text: 'world' },
         ],
       }),
-    ).toEqual({ id: 'm1', role: 'assistant', text: 'hello world', attachments: [] })
+    ).toEqual({ id: 'm1', role: 'assistant', text: 'hello world', attachments: [], reasoning: [] })
   })
 
   it('非法 role 或非对象返回 null', () => {
@@ -60,6 +67,28 @@ describe('normalizeMessage', () => {
         { kind: 'file', mime: 'application/pdf', url: '/mnt/inbox/attachments/1-b.pdf' },
         { kind: 'file', mime: 'text/plain', url: 'c.txt' },
       ],
+      reasoning: [],
+    })
+  })
+
+  it('思考分段收进 reasoning 表', () => {
+    expect(
+      normalizeMessage({
+        id: 'm3',
+        role: 'assistant',
+        parts: [
+          { type: 'reasoning', text: '先想想' },
+          { type: 'Thinking', content: '再想想' },
+          { type: 'text', text: '答' },
+          { type: 'reasoning' },
+        ],
+      }),
+    ).toEqual({
+      id: 'm3',
+      role: 'assistant',
+      text: '答',
+      attachments: [],
+      reasoning: ['先想想', '再想想'],
     })
   })
 })
@@ -242,5 +271,107 @@ describe('OpenCodeClient', () => {
     await new Promise(resolve => setTimeout(resolve, 50))
     stop()
     expect(seen).toEqual(['a', 'b'])
+  })
+})
+
+describe('中止/分叉与审批直连', () => {
+  function clientWith(calls: Array<[string, RequestInit]>) {
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      calls.push([url, init ?? {}])
+      return Promise.resolve(jsonResponse({}))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    return new OpenCodeClient('http://127.0.0.1:4097', { username: 'opencode', password: 'pw' })
+  }
+
+  it('abort 打到会话中止端点', async () => {
+    const calls: Array<[string, RequestInit]> = []
+    const client = clientWith(calls)
+    await client.abortSession('s1')
+    expect(calls[0][0]).toBe('http://127.0.0.1:4097/session/s1/abort')
+    expect((calls[0][1].method ?? 'GET')).toBe('POST')
+    await expect(client.abortSession('')).rejects.toThrow()
+  })
+
+  it('fork 带 messageID 并归一化新会话', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(jsonResponse({ id: 's2', title: 'fork' }))),
+    )
+    const client = new OpenCodeClient('http://127.0.0.1:4097', { username: 'opencode', password: 'pw' })
+    await expect(client.forkSession('s1', 'm1')).resolves.toEqual({ id: 's2', title: 'fork' })
+    await expect(client.forkSession('s1', '')).rejects.toThrow()
+  })
+
+  it('权限审批只接受枚举值', async () => {
+    const calls: Array<[string, RequestInit]> = []
+    const client = clientWith(calls)
+    await client.replyPermission('s1', 'r1', 'once')
+    expect(calls[0][0]).toBe('http://127.0.0.1:4097/api/session/s1/permission/r1/reply')
+    expect(JSON.parse(calls[0][1].body as string)).toEqual({ reply: 'once' })
+    await client.replyPermission('s1', 'r1', 'always', 'ok')
+    expect(JSON.parse(calls[1][1].body as string)).toEqual({ reply: 'always', message: 'ok' })
+    await expect(client.replyPermission('s1', 'r1', 'maybe' as never)).rejects.toThrow()
+  })
+
+  it('问答审批走 reply/reject 端点', async () => {
+    const calls: Array<[string, RequestInit]> = []
+    const client = clientWith(calls)
+    await client.replyQuestion('s1', 'q1', ['A 选项'])
+    expect(calls[0][0]).toBe('http://127.0.0.1:4097/api/session/s1/question/q1/reply')
+    expect(JSON.parse(calls[0][1].body as string)).toEqual({ answers: ['A 选项'] })
+    await client.rejectQuestion('s1', 'q1')
+    expect(calls[1][0]).toBe('http://127.0.0.1:4097/api/session/s1/question/q1/reject')
+    await expect(client.replyQuestion('s1', 'q1', [])).rejects.toThrow()
+  })
+})
+
+describe('审批列表解析', () => {
+  it('parseQuestionList 归一化问答请求', () => {
+    expect(
+      parseQuestionList([
+        {
+          id: 'q1',
+          sessionID: 's1',
+          questions: [
+            {
+              header: '确认',
+              question: '继续吗？',
+              options: [{ label: '是', description: '继续' }, { label: '否' }, {}],
+            },
+          ],
+        },
+        { sessionID: 's1' },
+      ]),
+    ).toEqual([
+      {
+        id: 'q1',
+        sessionId: 's1',
+        questions: [
+          {
+            header: '确认',
+            question: '继续吗？',
+            options: [
+              { label: '是', description: '继续' },
+              { label: '否', description: '' },
+            ],
+          },
+        ],
+      },
+    ])
+    expect(() => parseQuestionList({})).toThrow()
+  })
+
+  it('parsePermissionFeed 归一化待批请求', () => {
+    expect(
+      parsePermissionFeed([
+        { id: 'p1', sessionID: 's1', action: 'edit', resources: ['a.ts'] },
+        { requestID: 'p2', sessionId: 's1', permission: 'bash' },
+        {},
+      ]),
+    ).toEqual([
+      { id: 'p1', sessionId: 's1', action: 'edit', resources: ['a.ts'] },
+      { id: 'p2', sessionId: 's1', action: 'bash', resources: [] },
+    ])
   })
 })

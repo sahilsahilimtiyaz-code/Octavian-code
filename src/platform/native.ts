@@ -5,6 +5,7 @@ import type { PluginListenerHandle } from '@capacitor/core'
 import { createBrowserBridge } from './browser'
 import { validateSelfCheckOperation, type SelfCheckOperation } from '../runtimeSelfCheck'
 import type {
+  AgentEvent,
   AppThemeMode,
   PluginRequest,
   PluginCatalog,
@@ -41,6 +42,8 @@ import {
   validateAgentChatText,
   validateAgentChatTitle,
   validateAgentEngineServerState,
+  validateAgentEvent,
+  validateAgentMessageId,
   validateAgentModelId,
   validateAgentServerPort,
   validateAgentSessionId,
@@ -50,6 +53,8 @@ import {
   validateAttachmentFileName,
   validateAttachmentGuestPath,
   validateAttachmentMime,
+  validatePermissionReply,
+  validateQuestionAnswers,
   validateStagedAttachment,
   validateAllFilesAccessResult,
   validateDeviceCommand,
@@ -134,6 +139,15 @@ interface NativeRuntimePlugin {
   stageAgentAttachment(options: { fileName: string; mime: string; dataBase64: string }): Promise<unknown>
   agentChatFile(options: { guestPath: string }): Promise<unknown>
   agentModels(): Promise<unknown>
+  agentChatAbort(options: { sessionId: string }): Promise<unknown>
+  agentChatFork(options: { sessionId: string; messageId: string }): Promise<unknown>
+  agentPermissionReply(options: { sessionId: string; requestId: string; reply: string; message?: string }): Promise<unknown>
+  agentQuestionReply(options: { sessionId: string; requestId: string; answers: string[] }): Promise<unknown>
+  agentQuestionReject(options: { sessionId: string; requestId: string }): Promise<unknown>
+  agentQuestionList(options: { sessionId: string }): Promise<unknown>
+  agentPermissionFeed(): Promise<unknown>
+  startAgentEventStream(): Promise<void>
+  stopAgentEventStream(): Promise<void>
   getDiagnosticLogState(): Promise<DiagnosticLogState>
   readDiagnosticLog(options: { maxBytes?: number }): Promise<unknown>
   setDiagnosticLogSettings(options: { enabled: boolean; retentionDays: number }): Promise<DiagnosticLogState>
@@ -147,6 +161,7 @@ interface NativeRuntimePlugin {
   addListener(eventName: 'runtimeProgress', listener: (event: RuntimeProgress) => void): Promise<PluginListenerHandle>
   addListener(eventName: 'terminalOutput', listener: (event: TerminalChunk) => void): Promise<PluginListenerHandle>
   addListener(eventName: 'terminalExit', listener: (event: TerminalExit) => void): Promise<PluginListenerHandle>
+  addListener(eventName: 'agentEvent', listener: (event: AgentEvent) => void): Promise<PluginListenerHandle>
 }
 
 const MAX_TERMINAL_INPUT_BYTES = 256 * 1024
@@ -304,6 +319,43 @@ function createNativeBridge(): RuntimeBridge {
     agentModels: () => NativeRuntime.agentModels().then(value => ({
       models: parseAgentModels(parseJsonPayload(validateAgentChatJson(value).json)),
     })),
+    // 中止与分叉：id 形态前端先拦，原生侧代发后原文返回。
+    agentChatAbort: sessionId => NativeRuntime
+      .agentChatAbort({ sessionId: validateAgentSessionId(sessionId) })
+      .then(validateAgentChatJson),
+    agentChatFork: (sessionId, messageId) => NativeRuntime
+      .agentChatFork({ sessionId: validateAgentSessionId(sessionId), messageId: validateAgentMessageId(messageId) })
+      .then(validateAgentChatJson),
+    // 审批：reply 只认服务端枚举，answers 只认选项标签数组；message 可选。
+    agentPermissionReply: (sessionId, requestId, reply, message) => NativeRuntime
+      .agentPermissionReply({
+        sessionId: validateAgentSessionId(sessionId),
+        requestId: validateAgentMessageId(requestId),
+        reply: validatePermissionReply(reply),
+        ...(message === undefined || message === '' ? {} : { message: validateAgentChatText(message) }),
+      })
+      .then(validateAgentChatJson),
+    agentQuestionReply: (sessionId, requestId, answers) => NativeRuntime
+      .agentQuestionReply({
+        sessionId: validateAgentSessionId(sessionId),
+        requestId: validateAgentMessageId(requestId),
+        answers: validateQuestionAnswers(answers),
+      })
+      .then(validateAgentChatJson),
+    agentQuestionReject: (sessionId, requestId) => NativeRuntime
+      .agentQuestionReject({
+        sessionId: validateAgentSessionId(sessionId),
+        requestId: validateAgentMessageId(requestId),
+      })
+      .then(validateAgentChatJson),
+    agentQuestionList: sessionId => NativeRuntime
+      .agentQuestionList({ sessionId: validateAgentSessionId(sessionId) })
+      .then(validateAgentChatJson),
+    agentPermissionFeed: () => NativeRuntime.agentPermissionFeed().then(validateAgentChatJson),
+    // 事件流：订阅后每块服务端事件以 agentEvent 送达；停服/显式停止时断开。
+    startAgentEventStream: () => NativeRuntime.startAgentEventStream(),
+    stopAgentEventStream: () => NativeRuntime.stopAgentEventStream(),
+    addAgentEventListener: listener => NativeRuntime.addListener('agentEvent', validatedListener(validateAgentEvent, listener)),
     readDiagnosticLog: options => NativeRuntime.readDiagnosticLog({ maxBytes: options?.maxBytes }).then(validateDiagnosticLogText),
     getDiagnosticLogState: () => NativeRuntime.getDiagnosticLogState().then(validateDiagnosticLogState),
     setDiagnosticLogSettings: (enabled, retentionDays) => {

@@ -103,6 +103,16 @@ export const bridge = {
   stageAgentAttachment: vi.fn(),
   agentChatFile: vi.fn(),
   agentModels: vi.fn(),
+  agentChatAbort: vi.fn(),
+  agentChatFork: vi.fn(),
+  agentPermissionReply: vi.fn(),
+  agentQuestionReply: vi.fn(),
+  agentQuestionReject: vi.fn(),
+  agentQuestionList: vi.fn(),
+  agentPermissionFeed: vi.fn(),
+  startAgentEventStream: vi.fn(),
+  stopAgentEventStream: vi.fn(),
+  addAgentEventListener: vi.fn(),
   managePlugins: vi.fn(),
   getDiagnosticLogState: vi.fn(),
   readDiagnosticLog: vi.fn(),
@@ -316,6 +326,16 @@ export function beforeEachAppTest(): void {
   bridge.stageAgentAttachment.mockResolvedValue({ path: '/mnt/inbox/attachments/0-test.png' })
   bridge.agentChatFile.mockResolvedValue({ mime: 'image/png', dataBase64: 'iVBORw0KGgo=' })
   bridge.agentModels.mockResolvedValue({ models: [] })
+  bridge.agentChatAbort.mockResolvedValue({ json: 'true' })
+  bridge.agentChatFork.mockResolvedValue({ json: '{"id":"forked","title":"t"}' })
+  bridge.agentPermissionReply.mockResolvedValue({ json: 'null' })
+  bridge.agentQuestionReply.mockResolvedValue({ json: 'null' })
+  bridge.agentQuestionReject.mockResolvedValue({ json: 'true' })
+  bridge.agentQuestionList.mockResolvedValue({ json: '[]' })
+  bridge.agentPermissionFeed.mockResolvedValue({ json: '[]' })
+  bridge.startAgentEventStream.mockResolvedValue(undefined)
+  bridge.stopAgentEventStream.mockResolvedValue(undefined)
+  bridge.addAgentEventListener.mockResolvedValue({ remove: vi.fn().mockResolvedValue(undefined) })
   bridge.managePlugins.mockResolvedValue({ plugins: [] })
   bridge.getDiagnosticLogState.mockResolvedValue({ ...diagnostic })
   bridge.readDiagnosticLog.mockResolvedValue({

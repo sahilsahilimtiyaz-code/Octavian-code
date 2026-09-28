@@ -137,6 +137,40 @@ export interface AgentModelCatalog {
   models: AgentModelOption[]
 }
 
+/** 权限审批动作：直达服务端 PermissionV2.Reply 枚举，不翻译不合并。 */
+export type PermissionReply = 'once' | 'always' | 'reject'
+
+/** 待批权限：id/sessionID/action/resources/shape 按服务端原样透出展示。 */
+export interface AgentPermissionRequest {
+  id: string
+  sessionId: string
+  action: string
+  resources: string[]
+}
+
+export interface AgentQuestionOption {
+  label: string
+  description: string
+}
+
+export interface AgentQuestion {
+  header: string
+  question: string
+  options: AgentQuestionOption[]
+}
+
+export interface AgentQuestionRequest {
+  id: string
+  sessionId: string
+  questions: AgentQuestion[]
+}
+
+/** 服务端事件块：type 原样透出，data 优先按 JSON 解析。 */
+export interface AgentEvent {
+  type: string
+  data: unknown
+}
+
 /** 聊天分段：文本直传正文；文件/图片传落点内的访客路径引用。 */
 export type AgentChatPartType = 'text' | 'file' | 'image'
 
@@ -731,6 +765,24 @@ export interface RuntimeBridge {
   agentChatFile: (guestPath: string) => Promise<AttachmentContent>
   /** 模型目录：全局 providers → models 归一化，不含密钥与地址。 */
   agentModels: () => Promise<AgentModelCatalog>
+  /** 中止本轮运行；返回服务端原文（布尔）。 */
+  agentChatAbort: (sessionId: string) => Promise<AgentChatJson>
+  /** 从某条消息分叉新会话；返回新会话原文。 */
+  agentChatFork: (sessionId: string, messageId: string) => Promise<AgentChatJson>
+  /**
+   * 权限审批：reply 只认 once/always/reject（服务端枚举），message 可选说明。
+   * 问答审批：answers 是选中的选项标签；reject 另走无请求体端点。
+   * 待答问题与待批 feed 都是原文透传，前端过滤本会话。
+   */
+  agentPermissionReply: (sessionId: string, requestId: string, reply: PermissionReply, message?: string) => Promise<AgentChatJson>
+  agentQuestionReply: (sessionId: string, requestId: string, answers: string[]) => Promise<AgentChatJson>
+  agentQuestionReject: (sessionId: string, requestId: string) => Promise<AgentChatJson>
+  agentQuestionList: (sessionId: string) => Promise<AgentChatJson>
+  agentPermissionFeed: () => Promise<AgentChatJson>
+  /** 事件流开关：订阅后每块服务端事件以 agentEvent 送达。 */
+  startAgentEventStream: () => Promise<void>
+  stopAgentEventStream: () => Promise<void>
+  addAgentEventListener: (listener: (event: AgentEvent) => void) => Promise<ListenerHandle>
   addRuntimeProgressListener: (listener: (event: RuntimeProgress) => void) => Promise<ListenerHandle>
   addTerminalOutputListener: (listener: (event: TerminalChunk) => void) => Promise<ListenerHandle>
   addTerminalExitListener: (listener: (event: TerminalExit) => void) => Promise<ListenerHandle>

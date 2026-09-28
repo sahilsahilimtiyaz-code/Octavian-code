@@ -7,6 +7,7 @@
  */
 
 import type { AgentChatPart, AgentModelOption } from './platform/types'
+import type { AgentPermissionRequest, AgentQuestionRequest, PermissionReply } from './platform/types'
 
 export interface OpenCodeSession {
   id: string
@@ -20,6 +21,8 @@ export interface ChatMessage {
   text: string
   /** 非文本分段（文件/图片引用）：展示用，不参与正文拼接。 */
   attachments: ChatAttachment[]
+  /** 思考过程分段：可折叠展示，不参与正文拼接。 */
+  reasoning: string[]
 }
 
 /** 消息里的文件/图片引用：mime 与落点 url 原样透出，渲染时再决议。 */
@@ -67,6 +70,7 @@ export function normalizeMessage(value: unknown): ChatMessage | null {
   const parts = Array.isArray(item.parts) ? item.parts : []
   const texts: string[] = []
   const attachments: ChatAttachment[] = []
+  const reasoning: string[] = []
   for (const part of parts) {
     let record: Record<string, unknown>
     try {
@@ -76,7 +80,15 @@ export function normalizeMessage(value: unknown): ChatMessage | null {
     }
     if (record.type === 'text') {
       texts.push(asString(record.text))
-    } else if (record.type === 'file' || record.type === 'image') {
+      continue
+    }
+    if (typeof record.type === 'string' && /reason|think/i.test(record.type)) {
+      // 思考过程：文本在 text/content/summary 几种键下都见过，按优先级取。
+      const thought = asString(record.text) || asString(record.content) || asString(record.summary)
+      if (thought !== '') reasoning.push(thought)
+      continue
+    }
+    if (record.type === 'file' || record.type === 'image') {
       // 服务端字段名在不同版本里有 url/path/filename 几种写法：按优先级取第一个非空。
       const url = asString(record.url) || asString(record.path) || asString(record.filename)
       if (url === '') continue
@@ -87,7 +99,7 @@ export function normalizeMessage(value: unknown): ChatMessage | null {
       })
     }
   }
-  return { id: asString(item.id ?? ''), role, text: texts.join(''), attachments }
+  return { id: asString(item.id ?? ''), role, text: texts.join(''), attachments, reasoning }
 }
 
 /** 中继原文入口：字符串先按 JSON 解析，再走同一套归一化（非法直接抛错）。 */
@@ -210,6 +222,94 @@ export function parseMessageList(value: unknown): ChatMessage[] {
     return message === null ? [] : [message]
   })
 }
+
+function asStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((entry): entry is string => typeof entry === 'string' && entry !== '')
+}
+
+/**
+ * 待答问题归一化：`GET /api/session/:sid/question`。
+ *
+ * 条目含 id/sessionID + questions[]（header/question/options[]），
+ * 选项取 label（无 label 用 description 兜底，无两者跳过该选项）。
+ */
+export function parseQuestionList(value: unknown): AgentQuestionRequest[] {
+  if (!Array.isArray(value)) throw new Error('问答列表格式无效')
+  const requests: AgentQuestionRequest[] = []
+  for (const entry of value) {
+    let item: Record<string, unknown>
+    try {
+      item = asRecord(entry, '问答请求')
+    } catch {
+      continue
+    }
+    const id = asString(item.id)
+    if (id === '') continue
+    const questions: AgentQuestionRequest['questions'] = []
+    if (Array.isArray(item.questions)) {
+      for (const candidate of item.questions) {
+        let question: Record<string, unknown>
+        try {
+          question = asRecord(candidate, '问答')
+        } catch {
+          continue
+        }
+        const options: Array<{ label: string; description: string }> = []
+        if (Array.isArray(question.options)) {
+          for (const optionCandidate of question.options) {
+            try {
+              const option = asRecord(optionCandidate, '问答选项')
+              const label = asString(option.label) || asString(option.value)
+              if (label === '') continue
+              options.push({ label, description: asString(option.description) })
+            } catch {
+              continue
+            }
+          }
+        }
+        questions.push({
+          header: asString(question.header),
+          question: asString(question.question),
+          options,
+        })
+      }
+    }
+    requests.push({
+      id,
+      sessionId: asString(item.sessionID ?? item.sessionId),
+      questions,
+    })
+  }
+  return requests
+}
+
+/**
+ * 待批权限归一化：`GET /api/permission/request` 全局 feed。
+ *
+ * 条目含 id/sessionID/action/resources[]；调用方按 sessionID 过滤本会话。
+ */
+export function parsePermissionFeed(value: unknown): AgentPermissionRequest[] {
+  const list = Array.isArray(value) ? value : [value]
+  const requests: AgentPermissionRequest[] = []
+  for (const entry of list) {
+    let item: Record<string, unknown>
+    try {
+      item = asRecord(entry, '审批请求')
+    } catch {
+      continue
+    }
+    const id = asString(item.id ?? item.requestID)
+    if (id === '') continue
+    requests.push({
+      id,
+      sessionId: asString(item.sessionID ?? item.sessionId),
+      action: asString(item.action) || asString(item.permission) || '权限请求',
+      resources: asStringList(item.resources),
+    })
+  }
+  return requests
+}
 export function parseSseBlock(block: string): OpenCodeStreamEvent | null {
   let type = 'message'
   const dataLines: string[] = []
@@ -291,6 +391,66 @@ export class OpenCodeClient {
 
   async listModels(): Promise<AgentModelOption[]> {
     return parseAgentModels(await this.request('/config/providers'))
+  }
+
+  async abortSession(sessionId: string): Promise<void> {
+    if (sessionId === '') throw new Error('会话 id 缺失')
+    await this.request(`/session/${encodeURIComponent(sessionId)}/abort`, { method: 'POST' })
+  }
+
+  async forkSession(sessionId: string, messageId: string): Promise<OpenCodeSession> {
+    if (sessionId === '') throw new Error('会话 id 缺失')
+    if (messageId === '') throw new Error('消息标识缺失')
+    const value = asRecord(
+      await this.request(`/session/${encodeURIComponent(sessionId)}/fork`, {
+        method: 'POST',
+        body: JSON.stringify({ messageID: messageId }),
+      }),
+      '会话',
+    )
+    const id = asString(value.id)
+    if (id === '') throw new Error('会话缺少 id')
+    return { id, title: asString(value.title) || '未命名会话' }
+  }
+
+  async listQuestions(sessionId: string): Promise<AgentQuestionRequest[]> {
+    if (sessionId === '') throw new Error('会话 id 缺失')
+    return parseQuestionList(await this.request(`/api/session/${encodeURIComponent(sessionId)}/question`))
+  }
+
+  async permissionFeed(): Promise<AgentPermissionRequest[]> {
+    return parsePermissionFeed(await this.request('/api/permission/request'))
+  }
+
+  async replyPermission(sessionId: string, requestId: string, reply: PermissionReply, message?: string): Promise<void> {
+    if (sessionId === '') throw new Error('会话 id 缺失')
+    if (requestId === '') throw new Error('请求标识缺失')
+    if (reply !== 'once' && reply !== 'always' && reply !== 'reject') throw new Error('审批动作无效')
+    const body: Record<string, string> = { reply }
+    if (message !== undefined && message !== '') body.message = message
+    await this.request(
+      `/api/session/${encodeURIComponent(sessionId)}/permission/${encodeURIComponent(requestId)}/reply`,
+      { method: 'POST', body: JSON.stringify(body) },
+    )
+  }
+
+  async replyQuestion(sessionId: string, requestId: string, answers: string[]): Promise<void> {
+    if (sessionId === '') throw new Error('会话 id 缺失')
+    if (requestId === '') throw new Error('请求标识缺失')
+    if (answers.length === 0) throw new Error('问答选项为空')
+    await this.request(
+      `/api/session/${encodeURIComponent(sessionId)}/question/${encodeURIComponent(requestId)}/reply`,
+      { method: 'POST', body: JSON.stringify({ answers }) },
+    )
+  }
+
+  async rejectQuestion(sessionId: string, requestId: string): Promise<void> {
+    if (sessionId === '') throw new Error('会话 id 缺失')
+    if (requestId === '') throw new Error('请求标识缺失')
+    await this.request(
+      `/api/session/${encodeURIComponent(sessionId)}/question/${encodeURIComponent(requestId)}/reject`,
+      { method: 'POST' },
+    )
   }
 
   async listMessages(sessionId: string): Promise<ChatMessage[]> {

@@ -367,6 +367,23 @@ export function createBrowserBridge(): RuntimeBridge {
     agentChatSend: (): Promise<AgentChatJson> =>
       Promise.reject(new Error('浏览器预览不支持本机 Agent 聊天')),
     agentModels: (): Promise<AgentModelCatalog> => Promise.resolve({ models: [] }),
+    agentChatAbort: (): Promise<AgentChatJson> =>
+      Promise.reject(new Error('浏览器预览不支持本机 Agent 聊天')),
+    agentChatFork: (): Promise<AgentChatJson> =>
+      Promise.reject(new Error('浏览器预览不支持本机 Agent 聊天')),
+    agentPermissionReply: (): Promise<AgentChatJson> =>
+      Promise.reject(new Error('浏览器预览不支持本机 Agent 聊天')),
+    agentQuestionReply: (): Promise<AgentChatJson> =>
+      Promise.reject(new Error('浏览器预览不支持本机 Agent 聊天')),
+    agentQuestionReject: (): Promise<AgentChatJson> =>
+      Promise.reject(new Error('浏览器预览不支持本机 Agent 聊天')),
+    agentQuestionList: (): Promise<AgentChatJson> => Promise.resolve({ json: '[]' }),
+    agentPermissionFeed: (): Promise<AgentChatJson> => Promise.resolve({ json: '[]' }),
+    startAgentEventStream: (): Promise<void> =>
+      Promise.reject(new Error('浏览器预览不支持 Agent 事件流')),
+    stopAgentEventStream: (): Promise<void> => Promise.resolve(),
+    addAgentEventListener: (): Promise<ListenerHandle> =>
+      Promise.reject(new Error('浏览器预览不支持 Agent 事件流')),
     stageAgentAttachment: (): Promise<StagedAttachment> =>
       Promise.reject(new Error('浏览器预览不支持附件落点')),
     agentChatFile: (): Promise<AttachmentContent> => Promise.reject(new Error('浏览器预览不支持附件读取')),
