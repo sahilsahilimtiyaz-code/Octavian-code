@@ -34,7 +34,7 @@ def loadTeamSigning() {
         ]
     }
     def encoded = System.getenv('DSH_KEYSTORE_BASE64')
-    def password = System.getenv('DSH_KEYSTORE_PASSWORD')
+    def password = (System.getenv('DSH_KEYSTORE_PASSWORD') ?: '').trim()
     def chunkNames = ['DSH_KEYSTORE_B64_1', 'DSH_KEYSTORE_B64_2', 'DSH_KEYSTORE_B64_3', 'DSH_KEYSTORE_B64_4']
     def chunks = chunkNames.collect { System.getenv(it) ?: '' }
     if (chunks.every { !it.isEmpty() }) {
@@ -88,7 +88,18 @@ def loadTeamSigning() {
             )
         }
         decodedFile.bytes = keystoreBytes
-        // 不要带着损坏的密钥库走到签名才报错：在这里就用密码打开验证，
+        // 先验内容、再验密码，两步分开报错，远程排错不用猜：
+        // 团队密钥库文件的 SHA-256（轮换密钥时必须同步更新此值）。
+        def expectedP12Sha256 = 'f6e14736bec2f51560283d0e676b3ed1f3f1b1a689599bf8b380c118b6dae963'
+        def actualP12Sha256 = java.security.MessageDigest.getInstance('SHA-256').digest(keystoreBytes).encodeHex().toString()
+        if (!actualP12Sha256.equalsIgnoreCase(expectedP12Sha256)) {
+            throw new GradleException(
+                "团队签名内容不对：Secrets 解码后文件的 SHA-256 为 ${actualP12Sha256}，与团队密钥库不一致。"
+                + "分片贴错了顺序、贴重了某片、或某片缺/多字符（长度碰巧对上时长度检查拦不住）。"
+                + "请删除 DSH_KEYSTORE_B64_1..4 后按顺序重建四个分片；密码不用动。"
+            )
+        }
+        // 内容无误，剩下的唯一可能是密码不对：在这里就用密码打开验证，
         // 别名不对或密码不对都立刻给出可操作的错误。
         try {
             def keystoreStream = new ByteArrayInputStream(keystoreBytes)
@@ -96,15 +107,15 @@ def loadTeamSigning() {
             keystore.load(keystoreStream, password.toCharArray())
             if (!keystore.containsAlias('dsh-mobile')) {
                 throw new GradleException(
-                    "DSH_KEYSTORE_BASE64 解码成功，但里面没有 dsh-mobile 别名：存的不是团队密钥库文件，请重新粘贴完整值。",
+                    "密钥库内容不是团队密钥：里面没有 dsh-mobile 别名。请联系团队负责人确认密钥库文件。",
                 )
             }
         } catch (GradleException failed) {
             throw failed
         } catch (Exception failed) {
             throw new GradleException(
-                "团队密钥库打不开：DSH_KEYSTORE_BASE64 内容损坏，或 DSH_KEYSTORE_PASSWORD 与密钥库密码不一致。"
-                + "请先核对密码 Secret 是否带多余空格，再考虑重建 base64 Secret 并完整粘贴。",
+                "团队密钥库密码不对：内容已确认为团队密钥库，但 DSH_KEYSTORE_PASSWORD 打不开它。"
+                + "请重建密码 Secret 并完整粘贴（当前团队密码为 12 位字母数字，不要多空格少字符）；分片不用动。",
                 failed,
             )
         }
