@@ -386,6 +386,8 @@ def build_verify_fixture(
     with_ssh: bool = False,
     build_tools: bool = True,
     include_gcc: bool = True,
+    agent: bool = True,
+    include_agent_native: bool = True,
 ) -> tuple[Path, Path]:
     """造一个刚好能走到 verify-bundle 新校验的合成 bundle + manifest。"""
     elf = arm64_elf()
@@ -407,12 +409,46 @@ def build_verify_fixture(
             files["usr/lib/git-core/git-sh-setup"] = (b"#!/bin/sh\n", 0o644)
     if with_ssh:
         files["usr/bin/ssh"] = (elf, 0o755)
+    # Agent CLI：wrapper 走精确路径（与真实包一致），二进制走 .pnpm 真实路径，
+    # 提升路径只放符号链接——这正是 CI 上 claude 失败的形态（提升链接在，
+    # 真实文件不在），夹具必须复现它而不是直接给扁平真实文件。
+    agent_targets = (
+        ("usr/local/bin/opencode", "node_modules/opencode-ai/bin/opencode-linux-arm64", False),
+        ("usr/local/bin/claude", "node_modules/@anthropic-ai/claude-code/bin/claude-linux-arm64", False),
+        ("usr/local/bin/codex", "node_modules/@openai/codex/bin/codex.js", True),
+        ("usr/local/bin/gemini", "node_modules/@google/gemini-cli/bundle/gemini.js", True),
+    )
+    if agent:
+        for wrapper_path, target, via_node in agent_targets:
+            invocation = f"/opt/node/bin/node /opt/dsh/{target}" if via_node else f"/opt/dsh/{target}"
+            files[wrapper_path] = (f'#!/bin/sh\nexec {invocation} "$@"\n'.encode("utf-8"), 0o755)
     if build_tools:
         if include_gcc:
             files["usr/bin/gcc"] = (elf, 0o755)
         files["usr/bin/g++"] = (elf, 0o755)
         files["usr/bin/make"] = (elf, 0o755)
         files["usr/bin/pkg-config"] = (elf, 0o755)
+    # 让正例走完 Agent 校验、在后面的 pnpm 检查处失败：dshVersion、运行时元数据、
+    # dsh 包元数据、官方前端索引与 support 文件都按真实口径配齐。
+    # （反例只关心自己的 marker 先触发，这些只负责放行。）
+    files["etc/deepseek-harness-runtime.json"] = (
+        b'{"dshVersion": "0.1.5-rc.2", "runtimeVersion": "9.9.9"}', 0o644,
+    )
+    files["opt/dsh/node_modules/.pnpm/@deepseek-ai+dsh@9.9.9/node_modules/@deepseek-ai/dsh/package.json"] = (
+        b'{"version": "0.1.5-rc.2"}', 0o644,
+    )
+    files["opt/dsh/node_modules/@deepseek-ai/dsh-web-frontend/dist/index.html"] = (
+        b'<html><head><meta name="dsh-official-frontend" content="android-adapted-v1"></head>'
+        b'<body><div id="root"></div></body></html>', 0o644,
+    )
+    for archive_path, local_path in (
+        ("usr/local/lib/dsh-mobile-auth.cjs", SCRIPTS / "mobile-auth-preload.cjs"),
+        ("usr/local/lib/dsh-mobile-session-publish.py", SCRIPTS / "mobile-session-publish.py"),
+    ):
+        files[archive_path] = (
+            local_path.read_bytes(),
+            0o600 if archive_path.endswith(".py") else 0o644,
+        )
     for index in range(ca_files):
         files[f"etc/ssl/certs/ca{index:04d}.pem"] = (b"-----BEGIN CERTIFICATE-----\n", 0o644)
 
@@ -432,9 +468,87 @@ def build_verify_fixture(
             link.linkname = "usr/lib/git-core/git"
             link.mode = 0o755
             archive.addfile(link)
+        # Agent 检查之前的门（符号链接表、python 解释器、pnpm 包）必须先放行，
+        # 否则正例到不了 Agent 校验，反例的 marker 断言也会错位。
+        for name, target in (
+            ("bin", "usr/bin"),
+            ("lib", "usr/lib"),
+            ("sbin", "usr/sbin"),
+            ("usr/bin/sh", "dash"),
+            ("etc/mtab", "../proc/self/mounts"),
+            ("etc/os-release", "../usr/lib/os-release"),
+            ("etc/localtime", "/usr/share/zoneinfo/Etc/UTC"),
+            ("usr/local/bin/node", "../../../opt/node/bin/node"),
+            ("usr/local/bin/npm", "../../../opt/node/bin/npm"),
+            ("usr/local/bin/npx", "../../../opt/node/bin/npx"),
+            ("usr/local/bin/corepack", "../../../opt/node/bin/corepack"),
+            ("usr/local/bin/python3", "../../../opt/python/bin/python3"),
+            ("usr/local/bin/python", "../../../opt/python/bin/python3"),
+            ("opt/python/bin/python3", "python3.13"),
+            ("opt/dsh/node_modules/pnpm", ".pnpm/pnpm@9.9.9/node_modules/pnpm"),
+        ):
+            link = tarfile.TarInfo(name)
+            link.type = tarfile.SYMTYPE
+            link.linkname = target
+            link.mode = 0o777
+            archive.addfile(link)
+        python_real = tarfile.TarInfo("opt/python/bin/python3.13")
+        python_real.size = len(elf)
+        python_real.mode = 0o755
+        archive.addfile(python_real, io.BytesIO(elf))
+        extracted += len(elf)
+        pnpm_entry = tarfile.TarInfo("opt/dsh/node_modules/.pnpm/pnpm@9.9.9/node_modules/pnpm/bin/pnpm.cjs")
+        pnpm_entry.size = len(b"// pnpm\n")
+        pnpm_entry.mode = 0o644
+        archive.addfile(pnpm_entry, io.BytesIO(b"// pnpm\n"))
+        extracted += len(b"// pnpm\n")
+        pnpm_wrapper = tarfile.TarInfo("usr/local/bin/pnpm")
+        pnpm_wrapper.size = len(
+            b"#!/bin/sh\n"
+            b'exec /opt/node/bin/node /opt/dsh/node_modules/pnpm/bin/pnpm.cjs "$@"\n'
+        )
+        pnpm_wrapper.mode = 0o755
+        archive.addfile(
+            pnpm_wrapper,
+            io.BytesIO(
+                b"#!/bin/sh\n"
+                b'exec /opt/node/bin/node /opt/dsh/node_modules/pnpm/bin/pnpm.cjs "$@"\n'
+            ),
+        )
+        extracted += pnpm_wrapper.size
+        if agent:
+            # pnpm 提升布局：提升路径是符号链接，真实载荷住在 .pnpm store 里。
+            # 原生二进制只在 include_agent_native 时落盘——关掉即复现 CI 上
+            # claude 失败的形态（提升链接在，真实文件不在）。
+            for _, target, via_node in agent_targets:
+                hoisted = f"opt/dsh/{target}"
+                link = tarfile.TarInfo(hoisted)
+                link.type = tarfile.SYMTYPE
+                link.linkname = f"../.pnpm/store/{target}"
+                link.mode = 0o777
+                archive.addfile(link)
+                if via_node or include_agent_native:
+                    rel = target.removeprefix("node_modules/")
+                    parts = rel.split("/")
+                    package = "/".join(parts[:2]) if parts[0].startswith("@") else parts[0]
+                    rest = rel[len(package) + 1:]
+                    store_path = (
+                        f"opt/dsh/node_modules/.pnpm/{package.replace('/', '+')}@9.9.9"
+                        f"/node_modules/{package}/{rest}"
+                    )
+                    payload = elf if not via_node else b"// entry\n"
+                    info = tarfile.TarInfo(store_path)
+                    info.size = len(payload)
+                    info.mode = 0o755 if not via_node else 0o644
+                    archive.addfile(info, io.BytesIO(payload))
+                    extracted += len(payload)
     manifest = root / "fixture-manifest.json"
     manifest.write_text(
-        json.dumps({"rootfs": {"extractedBytes": extracted}}),
+        json.dumps({
+            "rootfs": {"extractedBytes": extracted},
+            "dshVersion": "0.1.5-rc.2",
+            "version": "9.9.9",
+        }),
         encoding="utf-8",
     )
     return bundle, manifest
@@ -506,6 +620,10 @@ def check_verify_bundle_network_rules(module: object) -> None:
         # 反例：缺少 gcc（构建器组件缺失与网络组件缺失是两条独立的失败口径）
         code, output = run("missing-gcc", ca_files=CA_FLOOR, network=True, include_gcc=False)
         assert "required build tool executables missing: gcc" in output, output
+        # 反例：Agent 原生二进制只有提升符号链接、没有 .pnpm 真实文件
+        # （复现 CI 上 claude 的失败：提升路径存在但 types[file] 拿不到）。
+        code, output = run("missing-agent-native", ca_files=CA_FLOOR, network=True, include_agent_native=False)
+        assert "agent CLI native binary is missing or not executable: 'node_modules/opencode-ai/bin/opencode-linux-arm64'" in output, output
         # 反例：git 不是 0755
         code, output = run("git-mode", ca_files=CA_FLOOR, network=True, git_mode=0o644)
         assert "not mode 0755" in output and "usr/bin/git" in output, output

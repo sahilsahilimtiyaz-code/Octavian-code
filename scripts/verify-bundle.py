@@ -58,14 +58,30 @@ AGENT_CLI_WRAPPERS = (
 )
 # wrapper 指向的真实入口：同样必须存在且非空（opencode/claude 要求 0755 可执行，
 # codex/gemini 走 node 读文件，0644 即可——与 builder 的 NPM_EXECUTABLE_PATHS 口径一致）。
-AGENT_CLI_NATIVE_TARGETS = frozenset({
-    "opt/dsh/node_modules/opencode-ai/bin/opencode-linux-arm64",
-    "opt/dsh/node_modules/@anthropic-ai/claude-code/bin/claude-linux-arm64",
-})
-AGENT_CLI_NODE_TARGETS = frozenset({
-    "opt/dsh/node_modules/@openai/codex/bin/codex.js",
-    "opt/dsh/node_modules/@google/gemini-cli/bundle/gemini.js",
-})
+#
+# 注意：这些目标按包内相对路径（`target` 字段）做后缀匹配，而不是按
+# `opt/dsh/node_modules/<pkg>/...` 全路径匹配——后者是 pnpm 的提升符号链接，
+# 打包器按符号链接原样写入，永远不是 "file" 类型。真正的载荷住在
+# `.pnpm/`  store 路径下（`runtime_executable_name` 对 rg/landlock-run 也是
+# 同一招：以后缀命中真实文件）。
+def agent_cli_native_name(name: str) -> str | None:
+    """Match a real agent native binary inside the pnpm store by package-relative suffix."""
+    if not name.startswith("opt/dsh/") or "/.pnpm/" not in name:
+        return None
+    for _, target, via_node in AGENT_CLI_WRAPPERS:
+        if not via_node and name.endswith("/" + target):
+            return target
+    return None
+
+
+def find_agent_file(types: dict[str, str], suffix: str) -> str | None:
+    """Find the single real archive file for a package-relative target suffix."""
+    needle = "/" + suffix
+    matches = [
+        name for name, kind in types.items()
+        if kind == "file" and name.startswith("opt/dsh/") and name.endswith(needle)
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 # Match package paths, not basenames: a random file called rg is not a runtime tool.
 REQUIRED_RUNTIME_EXECUTABLES = {
@@ -347,6 +363,8 @@ def main() -> int:
                     executable = exact_executable_name(name, REQUIRED_EDITOR_EXECUTABLES)
             if executable is None and not args.without_build_tools:
                 executable = exact_executable_name(name, REQUIRED_BUILD_EXECUTABLES)
+            if executable is None:
+                executable = agent_cli_native_name(name)
             if (
                 name.startswith(CA_CERTIFICATE_DIRECTORY)
                 and (m.isreg() or m.issym())
@@ -670,12 +688,15 @@ def main() -> int:
             fail(f"agent CLI wrapper is missing or invalid: {wrapper_path!r}")
         if file_modes.get(wrapper_path) != 0o755:
             fail(f"agent CLI wrapper is not executable: {wrapper_path!r}")
-    for target in AGENT_CLI_NATIVE_TARGETS:
-        if types.get(target) != "file" or file_modes.get(target) != 0o755:
+    for _, target, via_node in AGENT_CLI_WRAPPERS:
+        if via_node:
+            # Node 入口（codex/gemini）：存在即合格，0644 由 node 读取，不要求可执行。
+            if find_agent_file(types, target) is None:
+                fail(f"agent CLI node entrypoint is missing or ambiguous: {target!r}")
+        elif target not in runtime_executables:
+            # 原生二进制经上面的 executable 链做过 ELF + 0755 全校验；
+            # 到这里还没见到，说明包里根本没有（提升符号链接不算数）。
             fail(f"agent CLI native binary is missing or not executable: {target!r}")
-    for target in AGENT_CLI_NODE_TARGETS:
-        if types.get(target) != "file":
-            fail(f"agent CLI node entrypoint is missing: {target!r}")
     pnpm_package_link = "opt/dsh/node_modules/pnpm"
     if types.get(pnpm_package_link) != "sym":
         fail("pinned pnpm package link is missing")
