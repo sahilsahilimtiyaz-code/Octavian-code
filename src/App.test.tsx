@@ -24,6 +24,8 @@ describe('App conversation gate', () => {
   beforeEach(beforeEachAppTest)
 
   it('默认引擎为 OpenCode，切到 DeepSeek 后显示 Harness 门禁', async () => {
+    // 回到“从没选过引擎”的新用户态：默认落到 OpenCode。
+    window.localStorage.removeItem('octacode-engine-v1')
     // 关掉自动启动：否则挂载后 App 会自己 openHarness 并切到设置页，盖住要断言的对话页。
     bridge.getSettings.mockResolvedValueOnce({ ...settings, autoLaunch: false })
     render(<App />)
@@ -35,6 +37,21 @@ describe('App conversation gate', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'DeepSeek' }))
     expect(await screen.findByRole('button', { name: '打开对话' })).toBeInTheDocument()
     expect(window.localStorage.getItem('octacode-engine-v1')).toBe('deepseek')
+  })
+
+  it('没选过引擎时首屏弹出选择器，选后落盘且不再弹出', async () => {
+    window.localStorage.removeItem('octacode-engine-v1')
+    bridge.getSettings.mockResolvedValueOnce({ ...settings, autoLaunch: false })
+    render(<App />)
+
+    expect(await screen.findByRole('dialog', { name: '选择聊天引擎' })).toBeInTheDocument()
+    const dialog = screen.getByRole('dialog', { name: '选择聊天引擎' })
+    // 第一个即 OpenCode（注册表顺序）：点它确认。
+    fireEvent.click(within(dialog).getAllByRole('button', { name: '使用' })[0])
+    await waitFor(() => {
+      expect(window.localStorage.getItem('octacode-engine-v1')).toBe('opencode')
+    })
+    expect(screen.queryByRole('dialog', { name: '选择聊天引擎' })).not.toBeInTheDocument()
   })
 
   it('blocks the old Harness until the bundled runtime update is explicitly confirmed', async () => {
@@ -407,7 +424,9 @@ describe('应用语言', () => {
     expect(document.documentElement.lang).toBe('en')
     expect(bridge.openHarness).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Skip setup' }))
-    await waitFor(() => expect(bridge.openHarness).toHaveBeenCalledTimes(1))
+    // 全新用户默认引擎是 OpenCode：不自动打开 Harness，而是落在对话页并弹出引擎选择器。
+    expect(await screen.findByRole('dialog', { name: 'Choose chat engine' })).toBeVisible()
+    expect(bridge.openHarness).not.toHaveBeenCalled()
   })
 
   it('设置切换立即生效且重新挂载后保留语言', async () => {

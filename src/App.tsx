@@ -53,7 +53,7 @@ import { CustomProviders } from './components/CustomProviders'
 import { applyTheme, readThemeMode, saveThemeMode, useResolvedTheme, useThemeMode } from './theme'
 import type { ThemeMode } from './theme'
 import { AGENT_COMMANDS, AGENT_LOGIN_HINTS, findAgentCommand } from './agentCommands'
-import { AGENT_ENGINES, readEngineId, saveEngineId, type EngineId } from './agentEngines'
+import { AGENT_ENGINES, hasStoredEngineId, readEngineId, saveEngineId, type EngineId } from './agentEngines'
 import { OpenCodeChatPanel } from './components/OpenCodeChatPanel'
 import { runtimeBridge } from './platform/native'
 import { readLogInsights } from './logInsights'
@@ -720,9 +720,16 @@ function ConversationScreen({ busy, bridge, keepAlive, runtime, onInstall, onLau
   const updateRequired = installed && runtime.updateAvailable && !transitioning
   const [engineId, setEngineId] = useState<EngineId>(() => readEngineId())
   const engine = AGENT_ENGINES.find(item => item.id === engineId) ?? AGENT_ENGINES[0]
+  // 首屏引擎选择：只在用户从没表过态时弹一次，选了（或关掉）就不再打扰。
+  const [enginePickerOpen, setEnginePickerOpen] = useState<boolean>(() => !hasStoredEngineId())
 
   const pickEngine = (id: EngineId) => {
     if (saveEngineId(id)) setEngineId(id)
+  }
+
+  const chooseEngineAndClose = (id: EngineId) => {
+    pickEngine(id)
+    setEnginePickerOpen(false)
   }
   const progress = runtime.totalBytes > 0
     ? Math.min(100, Math.round((runtime.downloadedBytes / runtime.totalBytes) * 100))
@@ -755,6 +762,34 @@ function ConversationScreen({ busy, bridge, keepAlive, runtime, onInstall, onLau
         ))}
       </div>
       <p className="settings-note">{engine.tagline}</p>
+
+      {enginePickerOpen && (
+        <div className="dialog-backdrop">
+          <div className="dialog" role="dialog" aria-label={t("选择聊天引擎")}>
+            <h2>{t("选择聊天引擎")}</h2>
+            <p>{t("每个引擎都是独立完整的对话系统，可随时在上方切换。")}</p>
+            <div className="detail-list">
+              {AGENT_ENGINES.map(item => (
+                <div className="detail-row" key={item.id}>
+                  <span><Bot size={18} />{item.name}<small>{item.tagline}</small></span>
+                  <button
+                    className="button button-secondary compact-button"
+                    type="button"
+                    onClick={() => chooseEngineAndClose(item.id)}
+                  >
+                    {t("使用")}
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div className="dialog-actions">
+              <button className="button button-secondary" type="button" onClick={() => setEnginePickerOpen(false)}>
+                {t("以后再说")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {engine.transport === 'opencode-serve' ? (
         <OpenCodeChatPanel
@@ -3868,6 +3903,29 @@ export function App() {
   /** 常规打开入口：没有本机模型凭据时会被拦下并跳转到「模型与密钥」。 */
   const launchHarness = useCallback(() => openHarness(false), [openHarness])
 
+  /**
+   * 引擎感知的打开入口：按用户当前选择的引擎分流，绝不硬编码 Harness。
+   *
+   * - deepseek：走原有的 Harness 启动流程（含凭据门禁与更新检查）；
+   * - opencode：落到对话页的 OpenCode 面板（服务启停由面板接管，不在这里自作主张）；
+   * - pty 系：在终端中直达对应 CLI。
+   */
+  const launchConversation = useCallback(() => {
+    autoLaunchAttempted.current = true
+    const engine = AGENT_ENGINES.find(item => item.id === readEngineId()) ?? AGENT_ENGINES[0]
+    if (engine.transport === 'harness') {
+      openHarness(false)
+      return
+    }
+    if (engine.transport === 'opencode-serve') {
+      setActiveView('conversation')
+      return
+    }
+    if (engine.cliCommand !== undefined) {
+      openTerminalWithAgent(engine.cliCommand)
+    }
+  }, [openHarness, openTerminalWithAgent, setActiveView])
+
   /** 用户已确认「密钥在 Harness 里配置过」时的放行入口，只在显式按钮上使用。 */
   const launchHarnessConfirmed = useCallback(() => openHarness(true), [openHarness])
 
@@ -3876,9 +3934,10 @@ export function App() {
     if (settings !== null && settings.autoLaunch === false) return
     if (runtime.updateAvailable) return
     if (runtime.phase === 'running' || (runtimeInstalled(runtime) && runtime.phase !== 'stopping')) {
-      launchHarness()
+      // 按所选引擎打开：DeepSeek 走 Harness，其它引擎走各自的面（绝不硬编码）。
+      launchConversation()
     }
-  }, [activeView, booting, busy, language, launchHarness, onboardingOpen, runtime, settings])
+  }, [activeView, booting, busy, language, launchConversation, onboardingOpen, runtime, settings])
 
   const openSettings = useCallback((page: SettingsPage) => {
     // 最新设置读完之前不展示可编辑的旧草稿，避免迟到响应清空刚输入的内容。
@@ -4222,7 +4281,7 @@ export function App() {
   const screen = (() => {
     switch (activeView) {
       case 'conversation':
-        return <ConversationScreen busy={busy} bridge={runtimeBridge} keepAlive={keepAlive} runtime={runtime} onInstall={installRuntime} onLaunch={launchHarness} onOpenSettings={() => setActiveView('settings')} onOpenTerminal={() => setActiveView('terminal')} onOpenTerminalWithAgent={openTerminalWithAgent} onUpdate={requestRuntimeUpdate} />
+        return <ConversationScreen busy={busy} bridge={runtimeBridge} keepAlive={keepAlive} runtime={runtime} onInstall={installRuntime} onLaunch={launchConversation} onOpenSettings={() => setActiveView('settings')} onOpenTerminal={() => setActiveView('terminal')} onOpenTerminalWithAgent={openTerminalWithAgent} onUpdate={requestRuntimeUpdate} />
       case 'terminal':
         return <TerminalScreen bridge={runtimeBridge} fontSize={settings?.terminalFontSize ?? 14} initialAgent={terminalAgentRequest} onAuthorize={requestShizukuPermission} onBack={() => backToView('settings')} onConnect={connectShizuku} onConsumeInitialAgent={consumeTerminalAgent} onError={terminalError} onOpenEnvironment={() => setActiveView('environment')} onOpenShizuku={openShizuku} runtime={runtime} shizuku={shizuku} />
       case 'plugins':
@@ -4230,7 +4289,7 @@ export function App() {
       case 'environment':
         return <EnvironmentScreen busy={busy} bundledSource={settings === null || settings.manifestUrl.trim() === ''} runtime={runtime} onBack={() => backToView('settings')} onInstall={installRuntime} onReset={() => setResetOpen(true)} onStart={launchHarness} onStop={stopRuntime} onUpdate={requestRuntimeUpdate} onShareWorkspace={shareWorkspace} onListFiles={listWorkspaceFiles} workspaceFiles={workspaceFiles} onShareFile={shareWorkspaceFile} onOpenFile={openWorkspaceFile} onDeleteFile={deleteWorkspaceFile} loadAgentClis={loadAgentClis} installAgentCli={installAgentCli} />
       case 'settings':
-        return <SettingsHomeScreen busy={busy} diagnostic={diagnostic} keepAlive={keepAlive} runtime={runtime} shizuku={shizuku} onLaunch={launchHarness} onOpenEnvironment={() => setActiveView('environment')} onOpenPage={openSettings} onOpenPlugins={() => setActiveView('plugins')} onOpenTerminal={() => setActiveView('terminal')} onStop={stopRuntime} />
+        return <SettingsHomeScreen busy={busy} diagnostic={diagnostic} keepAlive={keepAlive} runtime={runtime} shizuku={shizuku} onLaunch={launchConversation} onOpenEnvironment={() => setActiveView('environment')} onOpenPage={openSettings} onOpenPlugins={() => setActiveView('plugins')} onOpenTerminal={() => setActiveView('terminal')} onStop={stopRuntime} />
       default: {
         const page = settingsPageOf(activeView)
         if (page === null) return null

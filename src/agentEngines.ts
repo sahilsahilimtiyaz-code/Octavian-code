@@ -93,6 +93,15 @@ export function engineById(id: EngineId): AgentEngine {
   return found
 }
 
+/** 用户是否显式选过引擎：没有则首屏弹出引擎选择器，而不是替他决定。 */
+export function hasStoredEngineId(): boolean {
+  try {
+    return window.localStorage.getItem(ENGINE_STORAGE_KEY) !== null
+  } catch {
+    return false
+  }
+}
+
 /** 读用户上次选的引擎：非法值（含旧版本残留）回退到默认，不抛错。 */
 export function readEngineId(): EngineId {
   try {

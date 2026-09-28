@@ -247,6 +247,9 @@ export function beforeEachAppTest(): void {
   window.localStorage.clear()
   window.localStorage.setItem('dsh-mobile-language-v1', 'zh-CN')
   window.localStorage.setItem('dsh-mobile-onboarding-v1', '1')
+  // 夹具代表“一直用 DeepSeek 的老用户”：引擎选择显式落盘，避免默认引擎的
+  // 改动牵连所有历史用例；引擎行为由专门的用例覆盖（它们自己设存储值）。
+  window.localStorage.setItem('octacode-engine-v1', 'deepseek')
   vi.clearAllMocks()
   bridge.setAppLanguage.mockResolvedValue(undefined)
   bridge.setAppTheme.mockResolvedValue(undefined)
