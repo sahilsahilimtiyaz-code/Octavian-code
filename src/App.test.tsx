@@ -23,12 +23,29 @@ import { App } from './App'
 describe('App conversation gate', () => {
   beforeEach(beforeEachAppTest)
 
+  it('默认引擎为 OpenCode，切到 DeepSeek 后显示 Harness 门禁', async () => {
+    // 关掉自动启动：否则挂载后 App 会自己 openHarness 并切到设置页，盖住要断言的对话页。
+    bridge.getSettings.mockResolvedValueOnce({ ...settings, autoLaunch: false })
+    render(<App />)
+
+    // 默认落到 OpenCode 面板：服务未启动态。
+    expect(await screen.findByText('服务未启动')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '打开对话' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'DeepSeek' }))
+    expect(await screen.findByRole('button', { name: '打开对话' })).toBeInTheDocument()
+    expect(window.localStorage.getItem('octacode-engine-v1')).toBe('deepseek')
+  })
+
   it('blocks the old Harness until the bundled runtime update is explicitly confirmed', async () => {
     bridge.getState
       .mockResolvedValueOnce({ ...readyState, updateAvailable: true })
       .mockResolvedValueOnce({ ...readyState })
 
     render(<App />)
+
+    // 默认引擎是 OpenCode：Harness 门禁类用例先切到 DeepSeek 页。
+    fireEvent.click(await screen.findByRole('tab', { name: 'DeepSeek' }))
 
     const updateButton = await screen.findByRole('button', { name: '更新运行环境' })
     expect(bridge.startHarness).not.toHaveBeenCalled()
@@ -154,6 +171,7 @@ describe('App conversation gate', () => {
     bridge.install.mockRejectedValueOnce(new Error('网络不可用或下载连接已中断，可稍后继续'))
 
     render(<App />)
+    fireEvent.click(await screen.findByRole('tab', { name: 'DeepSeek' }))
     fireEvent.click(await screen.findByRole('button', { name: '安装并进入对话' }))
 
     expect(await screen.findByText('网络不可用或下载连接已中断，可稍后继续。')).toBeInTheDocument()
@@ -351,6 +369,7 @@ describe('App conversation gate', () => {
     })
     bridge.getSettings.mockResolvedValueOnce({ ...settings, autoLaunch: false })
     render(<App />)
+    fireEvent.click(await screen.findByRole('tab', { name: 'DeepSeek' }))
 
     expect(await screen.findByText('Harness 未提供有效的网页认证入口，请更新运行环境后重试。')).toBeInTheDocument()
     expect(bridge.startHarness).not.toHaveBeenCalled()
