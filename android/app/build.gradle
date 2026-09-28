@@ -51,6 +51,17 @@ def loadTeamSigning() {
             joined.append(cleaned)
         }
         encoded = joined.toString()
+    } else if (chunks.any { !it.isEmpty() }) {
+        // 只贴了部分分片：直接点名缺谁，不要默默回退到旧单串再报 confusing 的错。
+        def missing = []
+        chunkNames.eachWithIndex { name, index ->
+            if (chunks[index].isEmpty()) {
+                missing.add(name)
+            }
+        }
+        throw new GradleException(
+            "团队签名分片不完整：缺少 ${missing.join('、')}（DSH_KEYSTORE_B64_1..4 四个必须齐全）。请补建缺失的分片 Secret，其余不用动。"
+        )
     }
     if (encoded != null && !encoded.isEmpty() && password != null && !password.isEmpty()) {
         // base64 容错：从聊天/手机复制长字符串时极易带入换行、空格乃至
