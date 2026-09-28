@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createNativeAgentChat, pollUntilSettled } from './agentChat'
+import { guessAttachmentMime, sanitizeAttachmentName } from './agentChat'
 import { parseMessageList, parseSession, parseSessionList } from './opencodeClient'
 import type { ChatMessage } from './opencodeClient'
 import type { RuntimeBridge } from './platform/types'
@@ -17,7 +18,7 @@ describe('agentChat parsers', () => {
   it('parseMessageList 跳过非法条目不断流', () => {
     expect(
       parseMessageList([{ role: 'user', parts: [{ type: 'text', text: 'hi' }] }, { role: 'system' }]),
-    ).toEqual([{ id: '', role: 'user', text: 'hi' }])
+    ).toEqual([{ id: '', role: 'user', text: 'hi', attachments: [] }])
   })
 })
 
@@ -36,7 +37,7 @@ describe('createNativeAgentChat', () => {
     const chat = createNativeAgentChat(bridge)
     await expect(chat.listSessions()).resolves.toEqual([{ id: 's1', title: 't' }])
     await expect(chat.createSession('hi')).resolves.toEqual({ id: 's2', title: '未命名会话' })
-    await expect(chat.listMessages('s1')).resolves.toEqual([{ id: '', role: 'user', text: '' }])
+    await expect(chat.listMessages('s1')).resolves.toEqual([{ id: '', role: 'user', text: '', attachments: [] }])
     await expect(chat.sendMessage('s1', 'hi')).resolves.toBeUndefined()
   })
 
@@ -47,15 +48,48 @@ describe('createNativeAgentChat', () => {
     const chat = createNativeAgentChat(bridge)
     await expect(chat.listSessions()).rejects.toThrow()
   })
+
+  it('附件落点与读取透传桥接载荷', async () => {
+    const bridge = stubBridge({
+      stageAgentAttachment: () => Promise.resolve({ path: '/mnt/inbox/attachments/1-a.png' }),
+      agentChatFile: () => Promise.resolve({ mime: 'image/png', dataBase64: 'aGk=' }),
+    })
+    const chat = createNativeAgentChat(bridge)
+    await expect(chat.stageAttachment('a.png', 'image/png', 'aGk=')).resolves.toEqual({
+      path: '/mnt/inbox/attachments/1-a.png',
+    })
+    await expect(chat.readAttachment('/mnt/inbox/attachments/1-a.png')).resolves.toEqual({
+      mime: 'image/png',
+      dataBase64: 'aGk=',
+    })
+  })
+})
+
+describe('attachment helpers', () => {
+  it('按后缀猜 mime，猜不出返回 null', () => {
+    expect(guessAttachmentMime('a.PNG')).toBe('image/png')
+    expect(guessAttachmentMime('report.pdf')).toBe('application/pdf')
+    expect(guessAttachmentMime('notes.md')).toBe('text/markdown')
+    expect(guessAttachmentMime('archive.zip')).toBeNull()
+    expect(guessAttachmentMime('noext')).toBeNull()
+  })
+
+  it('文件名只留安全字符，非法退回 file', () => {
+    expect(sanitizeAttachmentName('报告 2024/终版.png')).toBe('.png')
+    expect(sanitizeAttachmentName('a/b\\c.jpg')).toBe('c.jpg')
+    expect(sanitizeAttachmentName('...')).toBe('file')
+    expect(sanitizeAttachmentName('')).toBe('file')
+    expect(sanitizeAttachmentName('normal-file_1.PNG')).toBe('normal-file_1.PNG')
+  })
 })
 
 describe('pollUntilSettled', () => {
   it('连续两次快照一致即停', async () => {
     const snapshots: ChatMessage[][] = [
-      [{ id: 'a', role: 'user', text: 'hi' }],
+      [{ id: 'a', role: 'user', text: 'hi', attachments: [] }],
       [
-        { id: 'a', role: 'user', text: 'hi' },
-        { id: 'b', role: 'assistant', text: 'hello' },
+        { id: 'a', role: 'user', text: 'hi', attachments: [] },
+        { id: 'b', role: 'assistant', text: 'hello', attachments: [] },
       ],
     ]
     let calls = 0
@@ -71,7 +105,7 @@ describe('pollUntilSettled', () => {
 
   it('超时返回最后一次快照', async () => {
     const listMessages = vi.fn(
-      (): Promise<ChatMessage[]> => Promise.resolve([{ id: 'a', role: 'user', text: 'n' }]),
+      (): Promise<ChatMessage[]> => Promise.resolve([{ id: 'a', role: 'user', text: 'n', attachments: [] }]),
     )
     const result = await pollUntilSettled(listMessages, { intervalMs: 1, maxRounds: 3 })
     expect(result).toHaveLength(1)

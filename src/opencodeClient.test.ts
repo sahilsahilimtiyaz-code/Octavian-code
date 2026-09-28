@@ -30,12 +30,37 @@ describe('normalizeMessage', () => {
           { type: 'text', text: 'world' },
         ],
       }),
-    ).toEqual({ id: 'm1', role: 'assistant', text: 'hello world' })
+    ).toEqual({ id: 'm1', role: 'assistant', text: 'hello world', attachments: [] })
   })
 
   it('非法 role 或非对象返回 null', () => {
     expect(normalizeMessage({ role: 'system', parts: [] })).toBeNull()
     expect(normalizeMessage(null)).toBeNull()
+  })
+
+  it('文件与图片分段收进附件表，正文只留文本', () => {
+    expect(
+      normalizeMessage({
+        id: 'm2',
+        role: 'assistant',
+        parts: [
+          { type: 'text', text: 'see ' },
+          { type: 'image', mime: 'image/png', url: '/mnt/inbox/attachments/1-a.png' },
+          { type: 'file', mime: 'application/pdf', path: '/mnt/inbox/attachments/1-b.pdf' },
+          { type: 'file', mime: 'text/plain', filename: 'c.txt' },
+          { type: 'file', mime: 'image/png' },
+        ],
+      }),
+    ).toEqual({
+      id: 'm2',
+      role: 'assistant',
+      text: 'see ',
+      attachments: [
+        { kind: 'image', mime: 'image/png', url: '/mnt/inbox/attachments/1-a.png' },
+        { kind: 'file', mime: 'application/pdf', url: '/mnt/inbox/attachments/1-b.pdf' },
+        { kind: 'file', mime: 'text/plain', url: 'c.txt' },
+      ],
+    })
   })
 })
 
@@ -84,6 +109,20 @@ describe('OpenCodeClient', () => {
     const client = new OpenCodeClient('http://127.0.0.1:4097', { username: 'opencode', password: 'pw' })
     await expect(client.sendMessage('', 'hi')).rejects.toThrow()
     await expect(client.sendMessage('s1', '   ')).rejects.toThrow()
+  })
+
+  it('sendMessage 支持直接发分段（含附件引用）', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(jsonResponse({})))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new OpenCodeClient('http://127.0.0.1:4097', { username: 'opencode', password: 'pw' })
+    const parts = [
+      { type: 'text' as const, text: 'look' },
+      { type: 'image' as const, mime: 'image/png', url: '/mnt/inbox/attachments/1-a.png' },
+    ]
+    await client.sendMessage('s1', '', parts)
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(JSON.parse(init.body as string)).toEqual({ parts })
+    await expect(client.sendMessage('s1', '', [])).rejects.toThrow()
   })
 
   it('subscribe 把跨包切断的 SSE 块拼起来再回调', async () => {

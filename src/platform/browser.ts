@@ -3,6 +3,7 @@ import type {
   AgentCliStates,
   AgentChatJson,
   AgentEngineServerState,
+  AttachmentContent,
   DiagnosticLogState,
   DiagnosticLogText,
   HarnessLog,
@@ -18,6 +19,7 @@ import type {
   RuntimeState,
   RuntimeVersionsState,
   ShizukuState,
+  StagedAttachment,
   StorageAccessState,
   StorageDirsState,
   TerminalChunk,
@@ -363,6 +365,9 @@ export function createBrowserBridge(): RuntimeBridge {
     agentChatHistory: (): Promise<AgentChatJson> => Promise.resolve({ json: '[]' }),
     agentChatSend: (): Promise<AgentChatJson> =>
       Promise.reject(new Error('浏览器预览不支持本机 Agent 聊天')),
+    stageAgentAttachment: (): Promise<StagedAttachment> =>
+      Promise.reject(new Error('浏览器预览不支持附件落点')),
+    agentChatFile: (): Promise<AttachmentContent> => Promise.reject(new Error('浏览器预览不支持附件读取')),
     // 浏览器预览没有原生诊断日志：保持关闭且不可导出，避免给出「已经采集到东西」的错觉。
     getDiagnosticLogState: (): Promise<DiagnosticLogState> => Promise.resolve({ ...diagnosticState }),
     // 同理，预览里没有可查看的正文；返回空窗口而不是编造几条假记录。

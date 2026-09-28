@@ -119,6 +119,27 @@ export interface AgentChatJson {
   json: string
 }
 
+/** 聊天分段：文本直传正文；文件/图片传落点内的访客路径引用。 */
+export type AgentChatPartType = 'text' | 'file' | 'image'
+
+export interface AgentChatPart {
+  type: AgentChatPartType
+  text?: string
+  mime?: string
+  url?: string
+}
+
+/** 已落点的附件：访客路径（`/mnt/inbox/attachments/<名>`）。 */
+export interface StagedAttachment {
+  path: string
+}
+
+/** 附件内容：mime + base64，界面直接画缩略图。 */
+export interface AttachmentContent {
+  mime: string
+  dataBase64: string
+}
+
 export interface RuntimeSource {
   manifestUrl: string
   manifestSha256: string
@@ -680,7 +701,16 @@ export interface RuntimeBridge {
   agentChatSessions: () => Promise<AgentChatJson>
   agentChatCreate: (title: string) => Promise<AgentChatJson>
   agentChatHistory: (sessionId: string) => Promise<AgentChatJson>
-  agentChatSend: (sessionId: string, text: string) => Promise<AgentChatJson>
+  agentChatSend: (sessionId: string, text: string, parts?: AgentChatPart[]) => Promise<AgentChatJson>
+  /**
+   * 附件落点：base64 写进 `inbox/attachments`，返回访客路径。
+   * 无「所有文件访问」时原生侧抛错，界面复用投递区授权入口。
+   */
+  stageAgentAttachment: (fileName: string, mime: string, dataBase64: string) => Promise<StagedAttachment>
+  /**
+   * 附件读取：只认落点内的访客路径，返回内容画缩略图；落点之外拒绝。
+   */
+  agentChatFile: (guestPath: string) => Promise<AttachmentContent>
   addRuntimeProgressListener: (listener: (event: RuntimeProgress) => void) => Promise<ListenerHandle>
   addTerminalOutputListener: (listener: (event: TerminalChunk) => void) => Promise<ListenerHandle>
   addTerminalExitListener: (listener: (event: TerminalExit) => void) => Promise<ListenerHandle>

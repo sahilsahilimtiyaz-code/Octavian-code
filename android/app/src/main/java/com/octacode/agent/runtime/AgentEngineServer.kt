@@ -79,6 +79,127 @@ class AgentEngineServer(private val store: RuntimeStore) {
     }
 
     /**
+     * 带附件的发送：调用方传已校验的分段（文本 + 文件/图片引用），这里只做
+     * 第二道形态检查并拼请求体。附件引用的是落点内的访客路径
+     * （`/mnt/inbox/attachments/<名>`），不接受其它位置——访客全盘路径
+     * 不能经由聊天口任意读取，这是 v1 的作用域边界。
+     */
+    fun chatSendParts(sessionId: String, parts: List<AgentChatPart>): String = synchronized(lock) {
+        if (parts.isEmpty() || parts.size > MAX_CHAT_PARTS) {
+            throw RuntimeFailure("SETTINGS_INVALID", "消息分段无效")
+        }
+        val body = buildString {
+            append("{\"parts\":[")
+            parts.forEachIndexed { index, part ->
+                if (index > 0) append(',')
+                when (part.type) {
+                    "text" -> {
+                        val text = part.text.orEmpty()
+                        if (text.isEmpty() || text.length > MAX_CHAT_TEXT_CHARS) {
+                            throw RuntimeFailure("SETTINGS_INVALID", "消息内容无效")
+                        }
+                        append("{\"type\":\"text\",\"text\":")
+                        append(jsonQuote(text))
+                        append('}')
+                    }
+                    "file", "image" -> {
+                        val mime = part.mime.orEmpty()
+                        val url = part.url.orEmpty()
+                        if (!ATTACHMENT_MIME_TYPES.contains(mime) || !isAttachmentGuestPath(url)) {
+                            throw RuntimeFailure("SETTINGS_INVALID", "附件引用无效")
+                        }
+                        append("{\"type\":")
+                        append(jsonQuote(part.type))
+                        append(",\"mime\":")
+                        append(jsonQuote(mime))
+                        append(",\"url\":")
+                        append(jsonQuote("file://$url"))
+                        append(",\"filename\":")
+                        append(jsonQuote(url.substringAfterLast('/')))
+                        append('}')
+                    }
+                    else -> throw RuntimeFailure("SETTINGS_INVALID", "消息分段类型无效")
+                }
+            }
+            append("]}")
+        }
+        return relay("POST", "/session/" + requireSessionId(sessionId) + "/message", body)
+    }
+
+    /**
+     * 附件落点：base64 → `inbox/attachments/<时间戳>-<名>`，返回访客路径。
+     *
+     * 文件名只允许字母数字与 `._-`（64 以内）：访客路径要原样进请求体，
+     * 宽松的名字在这里就是注入。重名用时间戳前缀天然区分，不覆盖。
+     */
+    fun stageAttachment(fileName: String, mime: String, dataBase64: String): StagedAttachment = synchronized(lock) {
+        if (!ATTACHMENT_NAME_PATTERN.matches(fileName) || !ATTACHMENT_MIME_TYPES.contains(mime)) {
+            throw RuntimeFailure("SETTINGS_INVALID", "附件名称或类型无效")
+        }
+        val bytes = try {
+            Base64.getDecoder().decode(dataBase64)
+        } catch (_: IllegalArgumentException) {
+            throw RuntimeFailure("SETTINGS_INVALID", "附件内容不是合法 base64")
+        }
+        if (bytes.isEmpty() || bytes.size > MAX_ATTACHMENT_BYTES) {
+            throw RuntimeFailure("SETTINGS_INVALID", "附件大小超出限制（8MB）")
+        }
+        val directory = RuntimeMailbox(store).attachmentDirectory()
+        var candidate = File(directory, "${System.currentTimeMillis()}-$fileName")
+        var attempts = 0
+        while (candidate.exists() && attempts < MAX_STAGE_ATTEMPTS) {
+            attempts += 1
+            candidate = File(directory, "${System.currentTimeMillis()}-$attempts-$fileName")
+        }
+        try {
+            Files.write(candidate.toPath(), bytes, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)
+        } catch (_: Throwable) {
+            throw RuntimeFailure("AGENT_ENGINE_REQUEST_FAILED", "附件写入失败")
+        }
+        return StagedAttachment("${RuntimeMailboxLayout.GUEST_INBOX}/${RuntimeMailboxLayout.ATTACHMENT_DIRECTORY}/${candidate.name}")
+    }
+
+    /**
+     * 附件读取：只认落点内的访客路径，转 base64 给界面画缩略图。
+     *
+     * NoFollow 判定在前：落点是共享存储，用户手放的符号链接不能被跟随出去。
+     * 落点之外一律拒绝——访客全盘不在 v1 作用域内。
+     */
+    fun readAttachment(guestPath: String): AttachmentContent = synchronized(lock) {
+        if (!isAttachmentGuestPath(guestPath)) {
+            throw RuntimeFailure("SETTINGS_INVALID", "附件路径超出范围")
+        }
+        val name = guestPath.substringAfterLast('/')
+        val hostFile = File(RuntimeMailbox(store).attachmentDirectory(), name)
+        if (!MailboxTree.isRealRegularFile(hostFile.toPath())) {
+            throw RuntimeFailure("AGENT_ENGINE_REQUEST_FAILED", "附件不存在或不可读")
+        }
+        val bytes = try {
+            Files.readAllBytes(hostFile.toPath())
+        } catch (_: Throwable) {
+            throw RuntimeFailure("AGENT_ENGINE_REQUEST_FAILED", "附件读取失败")
+        }
+        if (bytes.isEmpty() || bytes.size > MAX_ATTACHMENT_BYTES) {
+            throw RuntimeFailure("AGENT_ENGINE_REQUEST_FAILED", "附件大小超出限制（8MB）")
+        }
+        val mime = mimeForName(name)
+        val encoded = Base64.getEncoder().encodeToString(bytes)
+        return AttachmentContent(mime, encoded)
+    }
+
+    private fun isAttachmentGuestPath(guestPath: String): Boolean {
+        val prefix = "${RuntimeMailboxLayout.GUEST_INBOX}/${RuntimeMailboxLayout.ATTACHMENT_DIRECTORY}/"
+        if (!guestPath.startsWith(prefix)) return false
+        val name = guestPath.removePrefix(prefix)
+        return name.isNotEmpty() && !name.contains('/') && ATTACHMENT_NAME_PATTERN.matches(name)
+    }
+
+    private fun mimeForName(name: String): String {
+        val extension = name.substringAfterLast('.', "").lowercase()
+        return EXTENSION_MIME[extension] ?: "application/octet-stream"
+    }
+
+    /**
      * 启动 `opencode serve`。
      *
      * 前置：Harness 必须未运行（共用环境文件）；访客必须已安装且自带
@@ -109,7 +230,14 @@ class AgentEngineServer(private val store: RuntimeStore) {
             targetPort.toString(),
         )
         val delivery = RuntimeSecretPolicy.delivery(mapOf(SERVER_PASSWORD_ENV to password), 0)
-        val argv = RuntimeCommand.prootArgv(store, entrypoint, secrets = delivery)
+        // 投递区绑定一起带进访客：附件落点（/mnt/inbox）对 opencode 可见，无需新挂载点。
+        // 不可访问时返回空列表（已有语义），服务照常启动，只是附件功能不可用。
+        val argv = RuntimeCommand.prootArgv(
+            store,
+            entrypoint,
+            bindMounts = RuntimeMailbox(store).bindMounts(),
+            secrets = delivery,
+        )
         val logFile = File(store.harnessPidFile.parentFile, "opencode-serve.log")
         val started = try {
             ProcessBuilder(argv)
@@ -315,7 +443,32 @@ class AgentEngineServer(private val store: RuntimeStore) {
         private const val PROBE_TIMEOUT_MILLIS = 1_500
         private const val RELAY_TIMEOUT_MILLIS = 15_000
         private const val MAX_CHAT_TEXT_CHARS = 32_000
+        private const val MAX_CHAT_PARTS = 8
+        private const val MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
+        private const val MAX_STAGE_ATTEMPTS = 100
         private val SESSION_ID_PATTERN = Regex("^[A-Za-z0-9_-]{1,64}$")
+        private val ATTACHMENT_NAME_PATTERN = Regex("^[A-Za-z0-9._-]{1,64}$")
+        /** v1 附件类型：图片 + PDF + 纯文本。压缩包/可执行文件不接受。 */
+        private val ATTACHMENT_MIME_TYPES = setOf(
+            "image/png",
+            "image/jpeg",
+            "image/gif",
+            "image/webp",
+            "application/pdf",
+            "text/plain",
+            "text/markdown",
+        )
+        private val EXTENSION_MIME = mapOf(
+            "png" to "image/png",
+            "jpg" to "image/jpeg",
+            "jpeg" to "image/jpeg",
+            "gif" to "image/gif",
+            "webp" to "image/webp",
+            "pdf" to "application/pdf",
+            "txt" to "text/plain",
+            "md" to "text/markdown",
+            "markdown" to "text/markdown",
+        )
         private const val PROCESS_STOP_TIMEOUT_SECONDS = 5L
         private val secureRandom = SecureRandom()
     }
@@ -326,4 +479,23 @@ data class AgentEngineState(
     val running: Boolean,
     val port: Int,
     val baseUrl: String?,
+)
+
+/** 聊天分段：文本直传正文；文件/图片传落点内的访客路径引用。 */
+data class AgentChatPart(
+    val type: String,
+    val text: String?,
+    val mime: String?,
+    val url: String?,
+)
+
+/** 已落点的附件：访客路径（`/mnt/inbox/attachments/<名>`）。 */
+data class StagedAttachment(
+    val guestPath: String,
+)
+
+/** 附件内容：mime + base64，界面直接画缩略图。 */
+data class AttachmentContent(
+    val mime: String,
+    val dataBase64: String,
 )

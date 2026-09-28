@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Loader2, Plus, Power, RefreshCw, SendHorizontal, SquareTerminal } from 'lucide-react'
-import { createNativeAgentChat, pollUntilSettled } from '../agentChat'
+import { FileText, Image, Loader2, Paperclip, Plus, Power, RefreshCw, SendHorizontal, SquareTerminal, X } from 'lucide-react'
+import {
+  ATTACHMENT_MAX_BYTES,
+  ATTACHMENT_MAX_PER_MESSAGE,
+  createNativeAgentChat,
+  guessAttachmentMime,
+  pollUntilSettled,
+  sanitizeAttachmentName,
+} from '../agentChat'
 import { t } from '../i18n'
-import type { ChatMessage, OpenCodeSession } from '../opencodeClient'
-import type { AgentEngineServerState, RuntimeBridge } from '../platform/types'
+import type { ChatAttachment, ChatMessage, OpenCodeSession } from '../opencodeClient'
+import type { AgentChatPart, AgentEngineServerState, RuntimeBridge } from '../platform/types'
+import { validateAttachmentMime } from '../platform/validation'
 
 interface OpenCodeChatPanelProps {
   bridge: RuntimeBridge
@@ -15,17 +23,54 @@ interface OpenCodeChatPanelProps {
   onOpenTerminal: () => void
 }
 
+/** 待发送的附件：选文件后先落点，发送时只带访客路径引用。 */
+interface StagedFile {
+  fileName: string
+  mime: string
+  guestPath: string
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error && error.message !== '' ? error.message : t('操作失败，请重试。')
+}
+
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error(t('文件读取失败。')))
+    reader.onload = () => {
+      const url = typeof reader.result === 'string' ? reader.result : ''
+      const comma = url.indexOf(',')
+      if (comma < 0) {
+        reject(new Error(t('文件读取失败。')))
+        return
+      }
+      resolve(url.slice(comma + 1))
+    }
+    reader.readAsDataURL(file)
+  })
 }
 
 /**
  * OpenCode 聊天面板：自有聊天界面的第一块拼图。
  *
  * 会话、消息、发送全部走原生中继（`runtimeBridge.agentChat*`）：Web 侧不直连
- * 本机服务、不碰密码。发送后用“消息表不再变长”跟随轮询（见 pollUntilSettled），
- * 有 SSE 之前先这样跑；卸载时迟到的轮询一律丢弃。
+ * 本机服务、不碰密码。附件先落点（`inbox/attachments`）再以路径引用发送；
+ * 图片引用按需读回画缩略图。发送后用“消息表不再变长”跟随轮询，有 SSE
+ * 之前先这样跑；卸载时迟到的轮询一律丢弃。
  */
+function AttachmentView({ attachment, thumb }: { attachment: ChatAttachment; thumb?: string }) {
+  const name = attachment.url.slice(attachment.url.lastIndexOf('/') + 1) || t('附件')
+  if (thumb !== undefined) {
+    return <img className="chat-thumb" src={thumb} alt={name} loading="lazy" />
+  }
+  return (
+    <span className="chat-chip">
+      {attachment.kind === 'image' ? <Image size={14} /> : <FileText size={14} />}
+      {name}
+    </span>
+  )
+}
 export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall, onOpenTerminal }: OpenCodeChatPanelProps) {
   const transport = useMemo(() => createNativeAgentChat(bridge), [bridge])
   // 桥方法缺失（旧版原生 / 不完整桩）：宁可显示升级提示，也不在 effect 里抛错整棵树卸载。
@@ -42,6 +87,11 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
   const [chatError, setChatError] = useState<string | null>(null)
   const [composer, setComposer] = useState('')
   const [creating, setCreating] = useState(false)
+  const [staged, setStaged] = useState<StagedFile[]>([])
+  const [staging, setStaging] = useState(false)
+  const [thumbs, setThumbs] = useState<Record<string, string>>({})
+  const [thumbFailed, setThumbFailed] = useState<Record<string, boolean>>({})
+  const fileInput = useRef<HTMLInputElement>(null)
   const cancelled = useRef(false)
 
   useEffect(() => {
@@ -158,6 +208,77 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
     )
   }
 
+  const attachFiles = (files: FileList | null) => {
+    if (files === null || files.length === 0) return
+    const room = ATTACHMENT_MAX_PER_MESSAGE - staged.length
+    if (room <= 0) {
+      setChatError(t('一次最多 4 个附件，先发送或移除已选的。'))
+      return
+    }
+    const picked = Array.from(files).slice(0, room)
+    setStaging(true)
+    setChatError(null)
+    void Promise.all(
+      picked.map(async file => {
+        if (file.size > ATTACHMENT_MAX_BYTES) throw new Error(t('附件超过 8MB 上限。'))
+        const mime = file.type !== '' ? file.type : guessAttachmentMime(file.name) ?? ''
+        validateAttachmentMime(mime)
+        const dataBase64 = await readFileAsBase64(file)
+        let safeName = sanitizeAttachmentName(file.name)
+        const extension = /\.([A-Za-z0-9]+)$/.exec(file.name)?.[1]?.toLowerCase()
+        if (!safeName.includes('.') && extension !== undefined && guessAttachmentMime(`x.${extension}`) === mime) {
+          safeName = `${safeName}.${extension}`
+        }
+        const stagedOne = await transport.stageAttachment(safeName, mime, dataBase64)
+        return { fileName: safeName, mime, guestPath: stagedOne.path }
+      }),
+    ).then(
+      added => {
+        if (cancelled.current) return
+        setStaging(false)
+        setStaged(previous => [...previous, ...added])
+      },
+      error => {
+        if (cancelled.current) return
+        setStaging(false)
+        setChatError(errorMessage(error))
+      },
+    )
+  }
+
+  const removeStaged = (guestPath: string) => {
+    setStaged(previous => previous.filter(item => item.guestPath !== guestPath))
+  }
+
+  // 画廊：消息里的图片引用按需读成 data URL；读不到的只记一次失败，显示文件名。
+  useEffect(() => {
+    if (server?.running !== true) return
+    const wanted = new Set<string>()
+    for (const message of messages) {
+      for (const attachment of message.attachments) {
+        if (
+          attachment.kind === 'image' &&
+          (attachment.mime.startsWith('image/') || /\.(png|jpe?g|gif|webp)$/i.test(attachment.url))
+        ) {
+          wanted.add(attachment.url)
+        }
+      }
+    }
+    wanted.forEach(url => {
+      if (thumbs[url] !== undefined || thumbFailed[url] === true) return
+      void transport.readAttachment(url).then(
+        content => {
+          if (!cancelled.current) {
+            setThumbs(previous => ({ ...previous, [url]: `data:${content.mime};base64,${content.dataBase64}` }))
+          }
+        },
+        () => {
+          if (!cancelled.current) setThumbFailed(previous => ({ ...previous, [url]: true }))
+        },
+      )
+    })
+  }, [messages, server?.running, transport, thumbs, thumbFailed])
+
   const createSession = () => {
     setCreating(true)
     setChatError(null)
@@ -178,13 +299,25 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
   }
 
   const send = () => {
-    if (activeId === null || composer.trim() === '' || sending) return
-    const text = composer
+    if (activeId === null || sending) return
+    const text = composer.trim()
+    const withFiles = staged.length > 0
+    const parts: AgentChatPart[] = []
+    if (text !== '') parts.push({ type: 'text', text })
+    for (const item of staged) {
+      parts.push({
+        type: item.mime.startsWith('image/') ? 'image' : 'file',
+        mime: item.mime,
+        url: item.guestPath,
+      })
+    }
+    if (parts.length === 0) return
     setComposer('')
+    setStaged([])
     setSending(true)
     setChatError(null)
     void transport
-      .sendMessage(activeId, text)
+      .sendMessage(activeId, text, withFiles ? parts : undefined)
       .then(() => transport.listMessages(activeId))
       .then(
         value => {
@@ -283,7 +416,20 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
           <section className="chat-transcript" aria-live="polite" aria-label={t('对话')}>
             {messages.map((message, index) => (
               <div key={message.id !== '' ? message.id : `m${index}`} className={message.role === 'user' ? 'chat-message user message-in' : 'chat-message assistant message-in'}>
-                <div className="chat-bubble">{message.text === '' ? t('(空消息)') : message.text}</div>
+                <div className="chat-bubble">
+                  {message.text === '' && message.attachments.length === 0 ? t('(空消息)') : message.text}
+                  {message.attachments.length > 0 && (
+                    <span className="chat-attachments">
+                      {message.attachments.map(attachment => (
+                        <AttachmentView
+                          key={attachment.url}
+                          attachment={attachment}
+                          thumb={thumbs[attachment.url]}
+                        />
+                      ))}
+                    </span>
+                  )}
+                </div>
               </div>
             ))}
             {(sending || following) && (
@@ -298,7 +444,43 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
             )}
           </section>
 
+          {staged.length > 0 && (
+            <div className="chat-staged" aria-label={t('待发送附件')}>
+              {staged.map(item => (
+                <span className="chat-chip" key={item.guestPath}>
+                  {item.mime.startsWith('image/') ? <Image size={14} /> : <FileText size={14} />}
+                  {item.fileName}
+                  <button type="button" aria-label={t('移除附件')} onClick={() => removeStaged(item.guestPath)}>
+                    <X size={14} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
           <div className="chat-composer">
+            <input
+              ref={fileInput}
+              type="file"
+              hidden
+              multiple
+              accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,.txt,.md"
+              aria-hidden="true"
+              tabIndex={-1}
+              onChange={event => {
+                attachFiles(event.target.files)
+                event.target.value = ''
+              }}
+            />
+            <button
+              className="icon-button"
+              type="button"
+              onClick={() => fileInput.current?.click()}
+              disabled={activeId === null || sending || staging}
+              title={t('添加附件（图片、PDF、文本，单个 8MB 以内）')}
+              aria-label={t('添加附件')}
+            >
+              {staging ? <Loader2 className="spin" size={18} /> : <Paperclip size={18} />}
+            </button>
             <input
               type="text"
               value={composer}
@@ -314,7 +496,7 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
               className="button button-primary"
               type="button"
               onClick={send}
-              disabled={activeId === null || composer.trim() === '' || sending}
+              disabled={activeId === null || (composer.trim() === '' && staged.length === 0) || sending}
               aria-label={t('发送')}
             >
               {sending ? <Loader2 className="spin" size={18} /> : <SendHorizontal size={18} />}

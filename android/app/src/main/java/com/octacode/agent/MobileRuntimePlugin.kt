@@ -30,6 +30,7 @@ import com.octacode.agent.runtime.MailboxImportOutcome
 import com.octacode.agent.runtime.MailboxState
 import com.octacode.agent.runtime.MobileRuntimeController
 import com.octacode.agent.runtime.DeviceBridgeAccess
+import com.octacode.agent.runtime.AgentChatPart
 import com.octacode.agent.runtime.AgentEngineState
 import com.octacode.agent.runtime.RuntimeAgentInstaller
 import com.octacode.agent.runtime.RuntimeEventSink
@@ -516,7 +517,52 @@ class MobileRuntimePlugin : Plugin() {
         execute(call) {
             val sessionId = call.getString("sessionId")?.trim().orEmpty()
             val text = call.getString("text").orEmpty()
-            JSObject().put("json", controller.agentChatSend(sessionId, text))
+            val partsArray = call.getArray("parts")
+            if (partsArray != null) {
+                // 富发送：文本 + 文件/图片引用。形态错误直接拒，原生侧另有第二道校验。
+                val parts = (0 until partsArray.length()).map { index ->
+                    val item = partsArray.getObject(index)
+                        ?: throw RuntimeFailure("SETTINGS_INVALID", "消息分段无效")
+                    AgentChatPart(
+                        type = item.getString("type").orEmpty(),
+                        text = item.getString("text"),
+                        mime = item.getString("mime"),
+                        url = item.getString("url"),
+                    )
+                }
+                JSObject().put("json", controller.agentChatSendParts(sessionId, parts))
+            } else {
+                JSObject().put("json", controller.agentChatSend(sessionId, text))
+            }
+        }
+    }
+
+    /**
+     * 权限：应用内桥接。
+     * 附件落点：base64 → `inbox/attachments`，返回访客路径。
+     * 无「所有文件访问」时抛错，界面复用投递区授权入口。
+     */
+    @PluginMethod
+    fun stageAgentAttachment(call: PluginCall) {
+        execute(call) {
+            val fileName = call.getString("fileName")?.trim().orEmpty()
+            val mime = call.getString("mime")?.trim().orEmpty()
+            val dataBase64 = call.getString("dataBase64").orEmpty()
+            val staged = controller.stageAgentAttachment(fileName, mime, dataBase64)
+            JSObject().put("path", staged.guestPath)
+        }
+    }
+
+    /**
+     * 权限：应用内桥接。
+     * 附件读取：只认落点内的访客路径，返回 mime + base64 给界面画缩略图。
+     */
+    @PluginMethod
+    fun agentChatFile(call: PluginCall) {
+        execute(call) {
+            val guestPath = call.getString("guestPath")?.trim().orEmpty()
+            val content = controller.readAgentAttachment(guestPath)
+            JSObject().put("mime", content.mime).put("dataBase64", content.dataBase64)
         }
     }
 

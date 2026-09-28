@@ -36,11 +36,18 @@ import {
   validateAgentCliName,
   validateAgentCliStates,
   validateAgentChatJson,
+  validateAgentChatParts,
   validateAgentChatText,
   validateAgentChatTitle,
   validateAgentEngineServerState,
   validateAgentServerPort,
   validateAgentSessionId,
+  validateAttachmentBase64,
+  validateAttachmentContent,
+  validateAttachmentFileName,
+  validateAttachmentGuestPath,
+  validateAttachmentMime,
+  validateStagedAttachment,
   validateAllFilesAccessResult,
   validateDeviceCommand,
   validateDeviceCommandParam,
@@ -120,7 +127,9 @@ interface NativeRuntimePlugin {
   agentChatSessions(): Promise<unknown>
   agentChatCreate(options: { title: string }): Promise<unknown>
   agentChatHistory(options: { sessionId: string }): Promise<unknown>
-  agentChatSend(options: { sessionId: string; text: string }): Promise<unknown>
+  agentChatSend(options: { sessionId: string; text?: string; parts?: unknown }): Promise<unknown>
+  stageAgentAttachment(options: { fileName: string; mime: string; dataBase64: string }): Promise<unknown>
+  agentChatFile(options: { guestPath: string }): Promise<unknown>
   getDiagnosticLogState(): Promise<DiagnosticLogState>
   readDiagnosticLog(options: { maxBytes?: number }): Promise<unknown>
   setDiagnosticLogSettings(options: { enabled: boolean; retentionDays: number }): Promise<DiagnosticLogState>
@@ -265,9 +274,24 @@ function createNativeBridge(): RuntimeBridge {
     agentChatHistory: sessionId => NativeRuntime
       .agentChatHistory({ sessionId: validateAgentSessionId(sessionId) })
       .then(validateAgentChatJson),
-    agentChatSend: (sessionId, text) => NativeRuntime
-      .agentChatSend({ sessionId: validateAgentSessionId(sessionId), text: validateAgentChatText(text) })
+    agentChatSend: (sessionId, text, parts) => NativeRuntime
+      .agentChatSend({
+        sessionId: validateAgentSessionId(sessionId),
+        ...(text === '' ? {} : { text: validateAgentChatText(text) }),
+        ...(parts === undefined ? {} : { parts: validateAgentChatParts(parts) }),
+      })
       .then(validateAgentChatJson),
+    // 附件落点与读取：文件名/mime/base64/访客路径形态前端先拦，原生侧再拦一次。
+    stageAgentAttachment: (fileName, mime, dataBase64) => NativeRuntime
+      .stageAgentAttachment({
+        fileName: validateAttachmentFileName(fileName),
+        mime: validateAttachmentMime(mime),
+        dataBase64: validateAttachmentBase64(dataBase64),
+      })
+      .then(validateStagedAttachment),
+    agentChatFile: guestPath => NativeRuntime
+      .agentChatFile({ guestPath: validateAttachmentGuestPath(guestPath) })
+      .then(validateAttachmentContent),
     readDiagnosticLog: options => NativeRuntime.readDiagnosticLog({ maxBytes: options?.maxBytes }).then(validateDiagnosticLogText),
     getDiagnosticLogState: () => NativeRuntime.getDiagnosticLogState().then(validateDiagnosticLogState),
     setDiagnosticLogSettings: (enabled, retentionDays) => {

@@ -6,6 +6,8 @@
  * 上游加字段时客户端不炸，缺字段时抛错由调用方转成界面态。
  */
 
+import type { AgentChatPart } from './platform/types'
+
 export interface OpenCodeSession {
   id: string
   title: string
@@ -16,6 +18,15 @@ export interface ChatMessage {
   id: string
   role: 'user' | 'assistant'
   text: string
+  /** 非文本分段（文件/图片引用）：展示用，不参与正文拼接。 */
+  attachments: ChatAttachment[]
+}
+
+/** 消息里的文件/图片引用：mime 与落点 url 原样透出，渲染时再决议。 */
+export interface ChatAttachment {
+  kind: 'file' | 'image'
+  mime: string
+  url: string
 }
 
 export interface OpenCodeStreamEvent {
@@ -43,7 +54,7 @@ function asString(value: unknown): string {
   return typeof value === 'string' ? value : ''
 }
 
-/** 把服务端的 message 归一化成界面消息：只要 text parts，其余忽略。 */
+/** 把服务端的 message 归一化成界面消息：文本拼接正文，文件/图片收进附件表。 */
 export function normalizeMessage(value: unknown): ChatMessage | null {
   let item: Record<string, unknown>
   try {
@@ -54,17 +65,29 @@ export function normalizeMessage(value: unknown): ChatMessage | null {
   const role = item.role === 'assistant' ? 'assistant' : item.role === 'user' ? 'user' : null
   if (role === null) return null
   const parts = Array.isArray(item.parts) ? item.parts : []
-  const text = parts
-    .map(part => {
-      try {
-        const record = asRecord(part, '消息分段')
-        return record.type === 'text' ? asString(record.text) : ''
-      } catch {
-        return ''
-      }
-    })
-    .join('')
-  return { id: asString(item.id ?? item.info?.toString?.()), role, text }
+  const texts: string[] = []
+  const attachments: ChatAttachment[] = []
+  for (const part of parts) {
+    let record: Record<string, unknown>
+    try {
+      record = asRecord(part, '消息分段')
+    } catch {
+      continue
+    }
+    if (record.type === 'text') {
+      texts.push(asString(record.text))
+    } else if (record.type === 'file' || record.type === 'image') {
+      // 服务端字段名在不同版本里有 url/path/filename 几种写法：按优先级取第一个非空。
+      const url = asString(record.url) || asString(record.path) || asString(record.filename)
+      if (url === '') continue
+      attachments.push({
+        kind: record.type === 'image' ? 'image' : 'file',
+        mime: asString(record.mime),
+        url,
+      })
+    }
+  }
+  return { id: asString(item.id ?? ''), role, text: texts.join(''), attachments }
 }
 
 /** 中继原文入口：字符串先按 JSON 解析，再走同一套归一化（非法直接抛错）。 */
@@ -177,8 +200,16 @@ export class OpenCodeClient {
     return parseMessageList(await this.request(`/session/${encodeURIComponent(sessionId)}/message`))
   }
 
-  async sendMessage(sessionId: string, text: string): Promise<void> {
+  async sendMessage(sessionId: string, text: string, parts?: AgentChatPart[]): Promise<void> {
     if (sessionId === '') throw new Error('会话 id 缺失')
+    if (parts !== undefined) {
+      if (parts.length === 0) throw new Error('消息分段为空')
+      await this.request(`/session/${encodeURIComponent(sessionId)}/message`, {
+        method: 'POST',
+        body: JSON.stringify({ parts }),
+      })
+      return
+    }
     if (text.trim() === '') throw new Error('消息内容为空')
     await this.request(`/session/${encodeURIComponent(sessionId)}/message`, {
       method: 'POST',

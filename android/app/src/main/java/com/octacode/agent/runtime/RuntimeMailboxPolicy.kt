@@ -38,6 +38,9 @@ object RuntimeMailboxLayout {
     /** 导入落点：工作区内的固定子目录，导入的相对路径全部落在这里。 */
     const val IMPORT_DIRECTORY = "mailbox-import"
 
+    /** 聊天附件子目录（inbox 之下）：与 tar 导入互不干扰，访客侧为 `/mnt/inbox/attachments`。 */
+    const val ATTACHMENT_DIRECTORY = "attachments"
+
     /**
      * 导出产物的**固定文件名**。
      *

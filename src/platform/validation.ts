@@ -29,7 +29,11 @@ import type {
   AgentCliState,
   AgentCliStates,
   AgentChatJson,
+  AgentChatPart,
+  AgentChatPartType,
   AgentEngineServerState,
+  AttachmentContent,
+  StagedAttachment,
   ShizukuState,
   StorageAccessState,
   StorageDirAvailability,
@@ -603,6 +607,100 @@ export function validateAgentChatText(value: unknown): string {
     throw new Error('消息内容无效')
   }
   return value
+}
+
+const AGENT_ATTACHMENT_NAME_PATTERN = /^[A-Za-z0-9._-]{1,64}$/
+const AGENT_ATTACHMENT_MIME_TYPES: readonly string[] = [
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'application/pdf',
+  'text/plain',
+  'text/markdown',
+]
+const AGENT_ATTACHMENT_GUEST_PREFIX = '/mnt/inbox/attachments/'
+const AGENT_CHAT_PART_MAX = 8
+/** 8MB 附件的 base64 体积上限（4/3 膨胀 + 余量），超了在过桥前拒绝。 */
+const AGENT_ATTACHMENT_BASE64_MAX_CHARS = 12 * 1024 * 1024
+
+export function validateAttachmentMime(value: unknown): string {
+  if (typeof value !== 'string' || !AGENT_ATTACHMENT_MIME_TYPES.includes(value)) {
+    throw new Error('附件类型无效')
+  }
+  return value
+}
+
+export function validateAttachmentFileName(value: unknown): string {
+  if (typeof value !== 'string' || !AGENT_ATTACHMENT_NAME_PATTERN.test(value)) {
+    throw new Error('附件名称无效')
+  }
+  return value
+}
+
+export function validateAttachmentGuestPath(value: unknown): string {
+  if (typeof value !== 'string' || !value.startsWith(AGENT_ATTACHMENT_GUEST_PREFIX)) {
+    throw new Error('附件路径超出范围')
+  }
+  const name = value.slice(AGENT_ATTACHMENT_GUEST_PREFIX.length)
+  if (name === '' || name.includes('/') || !AGENT_ATTACHMENT_NAME_PATTERN.test(name)) {
+    throw new Error('附件路径超出范围')
+  }
+  return value
+}
+
+export function validateAttachmentBase64(value: unknown): string {
+  if (
+    typeof value !== 'string' ||
+    value === '' ||
+    value.length > AGENT_ATTACHMENT_BASE64_MAX_CHARS ||
+    !/^[A-Za-z0-9+/]*={0,2}$/.test(value)
+  ) {
+    throw new Error('附件内容无效')
+  }
+  return value
+}
+
+/**
+ * 聊天分段：文本段与文本正文同一套限制；文件/图片段只接受落点引用。
+ *
+ * 与原生侧双保险：这里拦住形态，`AgentEngineServer` 再拦一次取值。
+ */
+export function validateAgentChatParts(value: unknown): AgentChatPart[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > AGENT_CHAT_PART_MAX) {
+    throw new Error('消息分段无效')
+  }
+  return value.map(entry => {
+    const item = asRecord(entry, '消息分段')
+    const type = item.type as AgentChatPartType
+    if (type === 'text') {
+      return { type, text: validateAgentChatText(item.text) }
+    }
+    if (type === 'file' || type === 'image') {
+      const mime = validateAttachmentMime(item.mime)
+      const url = validateAttachmentGuestPath(item.url)
+      if (type === 'image' && !mime.startsWith('image/')) throw new Error('图片附件类型无效')
+      return { type, mime, url }
+    }
+    throw new Error('消息分段类型无效')
+  })
+}
+
+/** 落点返回：访客路径形态。 */
+export function validateStagedAttachment(value: unknown): StagedAttachment {
+  const record = asRecord(value, '附件落点')
+  return { path: validateAttachmentGuestPath(record.path) }
+}
+
+/** 附件内容：mime + base64（界面直接拼 data URL）。 */
+export function validateAttachmentContent(value: unknown): AttachmentContent {
+  const record = asRecord(value, '附件内容')
+  // 读路径放行 `type/subtype` 形态即可：能进落点的文件在落点与发送两道已经按白名单拦过，
+  // 这里再卡一次只会把大小写后缀这类无害情况误伤。
+  if (typeof record.mime !== 'string' || !/^[A-Za-z0-9.+-]+\/[A-Za-z0-9.+-]+$/.test(record.mime)) {
+    throw new Error('附件类型无效')
+  }
+  return { mime: record.mime, dataBase64: validateAttachmentBase64(record.dataBase64) }
 }
 
 export function validateRuntimeProgress(value: unknown): RuntimeProgress {  const progress = asRecord(value, '运行时进度')

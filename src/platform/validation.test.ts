@@ -10,6 +10,18 @@ import {
   assertTerminalSize,
   validateAgentCliName,
   validateAgentCliStates,
+  validateAgentChatParts,
+  validateAgentChatText,
+  validateAgentChatTitle,
+  validateAgentEngineServerState,
+  validateAgentServerPort,
+  validateAgentSessionId,
+  validateAttachmentBase64,
+  validateAttachmentContent,
+  validateAttachmentFileName,
+  validateAttachmentGuestPath,
+  validateAttachmentMime,
+  validateStagedAttachment,
   validateAllFilesAccessResult,
   validateDiagnosticLogExport,
   validateDiagnosticLogState,
@@ -929,5 +941,66 @@ describe('运行时版本校验', () => {
     for (const target of ['current', 'bundled', 'retained', '', null, 7]) {
       expect(() => assertRuntimeVersionTarget(target), String(target)).toThrow('运行时版本操作目标无效')
     }
+  })
+})
+
+describe('Agent 聊天与附件校验', () => {
+  it('服务状态只认 loopback 地址与用户态端口', () => {
+    expect(validateAgentEngineServerState({ running: true, port: 4097, baseUrl: 'http://127.0.0.1:4097' }))
+      .toEqual({ running: true, port: 4097, baseUrl: 'http://127.0.0.1:4097' })
+    expect(validateAgentEngineServerState({ running: false, port: 4097 })).toEqual({ running: false, port: 4097, baseUrl: null })
+    for (const bad of [
+      { running: true, port: 4097, baseUrl: 'http://192.168.1.10:4097' },
+      { running: true, port: 4097, baseUrl: 'https://127.0.0.1:4097' },
+      { running: true, port: 80, baseUrl: 'http://127.0.0.1:80' },
+      { running: 'yes', port: 4097 },
+    ]) {
+      expect(() => validateAgentEngineServerState(bad), JSON.stringify(bad)).toThrow()
+    }
+    expect(() => validateAgentServerPort(0)).toThrow('Agent 服务端口无效')
+    expect(() => validateAgentServerPort(70000)).toThrow('Agent 服务端口无效')
+    expect(validateAgentServerPort(4097)).toBe(4097)
+  })
+
+  it('会话标识只认服务端形态', () => {
+    expect(validateAgentSessionId('ses_abc-123_X')).toBe('ses_abc-123_X')
+    for (const bad of ['', '../x', 'a/b', 'x'.repeat(65), null]) {
+      expect(() => validateAgentSessionId(bad), String(bad)).toThrow('会话标识无效')
+    }
+    expect(() => validateAgentChatTitle('   ')).toThrow('会话标题无效')
+    expect(validateAgentChatTitle('  t  ')).toBe('t')
+    expect(() => validateAgentChatText('')).toThrow('消息内容无效')
+  })
+
+  it('分段只认文本与落点引用', () => {
+    const file = { type: 'file', mime: 'application/pdf', url: '/mnt/inbox/attachments/1-a.pdf' }
+    expect(validateAgentChatParts([{ type: 'text', text: 'hi' }, file])).toHaveLength(2)
+    for (const bad of [
+      [],
+      [{ type: 'video', url: 'x' }],
+      [{ type: 'text', text: '' }],
+      [{ type: 'file', mime: 'application/zip', url: '/mnt/inbox/attachments/1-a.zip' }],
+      [{ type: 'image', mime: 'application/pdf', url: '/mnt/inbox/attachments/1-a.pdf' }],
+      [{ type: 'file', mime: 'image/png', url: '/etc/passwd' }],
+      [{ type: 'file', mime: 'image/png', url: '/mnt/inbox/attachments/../x' }],
+    ]) {
+      expect(() => validateAgentChatParts(bad), JSON.stringify(bad)).toThrow()
+    }
+  })
+
+  it('附件落点与内容形态', () => {
+    expect(validateStagedAttachment({ path: '/mnt/inbox/attachments/1-a.png' }))
+      .toEqual({ path: '/mnt/inbox/attachments/1-a.png' })
+    expect(() => validateStagedAttachment({ path: '/mnt/inbox/1-a.png' })).toThrow()
+    expect(validateAttachmentFileName('a-b_c.png')).toBe('a-b_c.png')
+    expect(() => validateAttachmentFileName('../x')).toThrow('附件名称无效')
+    expect(validateAttachmentMime('image/png')).toBe('image/png')
+    expect(() => validateAttachmentMime('application/zip')).toThrow('附件类型无效')
+    expect(validateAttachmentGuestPath('/mnt/inbox/attachments/1-a.png')).toBe('/mnt/inbox/attachments/1-a.png')
+    expect(() => validateAttachmentGuestPath('/mnt/inbox/attachments/')).toThrow()
+    expect(validateAttachmentBase64('aGk=')).toBe('aGk=')
+    expect(() => validateAttachmentBase64('aGk===')).toThrow()
+    expect(validateAttachmentContent({ mime: 'image/png', dataBase64: 'aGk=' }))
+      .toEqual({ mime: 'image/png', dataBase64: 'aGk=' })
   })
 })

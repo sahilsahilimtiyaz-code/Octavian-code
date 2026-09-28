@@ -470,6 +470,22 @@ internal class RuntimeMailbox(private val store: RuntimeStore) {
             ?: throw RuntimeFailure(MailboxCodes.UNAVAILABLE, "投递区目录不可读写")
     }
 
+    /**
+     * 聊天附件落点（`inbox/attachments`）：与 tar 导入互不干扰（导入只认根下 tar），
+     * 访客侧随 `/mnt/inbox` 绑定自动可见，无需新挂载点。
+     *
+     * 注意：inbox 在共享存储上，落进来的附件对有存储权限的应用可见——
+     * 这是投递区设计的固有属性（用户本来就是往这里放 tar 的），不是新开的口子。
+     */
+    internal fun attachmentDirectory(): File {
+        val directories = requireDirectories()
+        val attachments = File(directories.inbox, ATTACHMENT_DIRECTORY)
+        if (!ensureDirectory(attachments, true) || !attachments.canWrite()) {
+            throw RuntimeFailure(MailboxCodes.UNAVAILABLE, "附件目录不可写")
+        }
+        return attachments
+    }
+
     private fun requireWorkspace(): File {
         if (!MailboxTree.isRealDirectory(workspace.toPath())) {
             throw RuntimeFailure(MailboxCodes.WORKSPACE_UNAVAILABLE, "工作区不可用（运行时尚未安装）")

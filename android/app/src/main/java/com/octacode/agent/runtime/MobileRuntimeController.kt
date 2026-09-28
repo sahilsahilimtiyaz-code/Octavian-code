@@ -135,6 +135,25 @@ class MobileRuntimeController(
         agentEngine.chatSend(sessionId, text)
     }
 
+    fun agentChatSendParts(sessionId: String, parts: List<AgentChatPart>): String = lifecycleLock.withLock {
+        ensureOpen()
+        agentEngine.chatSendParts(sessionId, parts)
+    }
+
+    /**
+     * 附件落点与读取：inbox/attachments 子目录，无权限时抛错由界面引导授权。
+     */
+    fun stageAgentAttachment(fileName: String, mime: String, dataBase64: String): StagedAttachment =
+        lifecycleLock.withLock {
+            ensureOpen()
+            agentEngine.stageAttachment(fileName, mime, dataBase64)
+        }
+
+    fun readAgentAttachment(guestPath: String): AttachmentContent = lifecycleLock.withLock {
+        ensureOpen()
+        agentEngine.readAttachment(guestPath)
+    }
+
     /**
      * 运行时版本列表：当前版本、保留下来的上一版本、APK 内置版本。
      *
