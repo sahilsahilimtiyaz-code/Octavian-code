@@ -38,15 +38,42 @@ def loadTeamSigning() {
         // （粘贴损坏的常见形态全在此列）；缺字符仍会在解码时失败，
         // 那说明 Secret 存的值本身不完整，需要重新粘贴。
         def sanitized = encoded.replaceAll("[^A-Za-z0-9+/=]", "")
+        // 复制时最常丢的是末尾的 padding（正确值以单个 = 结尾，总长 3404）：
+        // 未以 = 结尾且长度 % 4 == 3 时补一个 =；其它形态一律视为缺字符。
+        if (!sanitized.endsWith("=") && sanitized.length() % 4 == 3) {
+            sanitized += "="
+        }
         def decodedFile = layout.buildDirectory.file('keystore/dsh-mobile-team.jks').get().asFile
         decodedFile.parentFile.mkdirs()
+        byte[] keystoreBytes
         try {
-            decodedFile.bytes = Base64.decoder.decode(sanitized)
+            keystoreBytes = Base64.decoder.decode(sanitized)
         } catch (IllegalArgumentException decoding) {
             throw new GradleException(
                 "DSH_KEYSTORE_BASE64 无效：清洗后长度为 ${sanitized.length()}（合法 base64 长度应为 4 的倍数）。"
                 + "Secret 里存的值在复制时缺字符了，请删除该 Secret 后重建并完整粘贴（单行、连贯、无缺失）。",
                 decoding,
+            )
+        }
+        decodedFile.bytes = keystoreBytes
+        // 不要带着损坏的密钥库走到签名才报错：在这里就用密码打开验证，
+        // 别名不对或密码不对都立刻给出可操作的错误。
+        try {
+            def keystoreStream = new ByteArrayInputStream(keystoreBytes)
+            def keystore = java.security.KeyStore.getInstance("PKCS12")
+            keystore.load(keystoreStream, password.toCharArray())
+            if (!keystore.containsAlias('dsh-mobile')) {
+                throw new GradleException(
+                    "DSH_KEYSTORE_BASE64 解码成功，但里面没有 dsh-mobile 别名：存的不是团队密钥库文件，请重新粘贴完整值。",
+                )
+            }
+        } catch (GradleException failed) {
+            throw failed
+        } catch (Exception failed) {
+            throw new GradleException(
+                "团队密钥库打不开：DSH_KEYSTORE_BASE64 内容损坏，或 DSH_KEYSTORE_PASSWORD 与密钥库密码不一致。"
+                + "请先核对密码 Secret 是否带多余空格，再考虑重建 base64 Secret 并完整粘贴。",
+                failed,
             )
         }
         return [
