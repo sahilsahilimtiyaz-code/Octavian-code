@@ -377,6 +377,9 @@ internal object RuntimeStorageDirsPolicy {
         canonicalPath: String,
         publicRoot: String = RuntimeStorageDirsLayout.PUBLIC_STORAGE,
     ) {
+        // 结构先行：形态错误（非绝对路径、空分段、`.`/`..`、反斜杠、控制字符、
+        // 超长超深）与落在哪棵卷下正交，一律先报 PATH_INVALID，再谈归属。
+        requireStructuralPath(canonicalPath)
         val root = publicRoot.trimEnd(PATH_SEPARATOR)
         val accepted = if (canonicalPath == root || canonicalPath.startsWith("$root$PATH_SEPARATOR")) {
             listOf(root)
