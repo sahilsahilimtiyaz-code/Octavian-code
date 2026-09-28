@@ -32,9 +32,14 @@ def loadTeamSigning() {
     def encoded = System.getenv('DSH_KEYSTORE_BASE64')
     def password = System.getenv('DSH_KEYSTORE_PASSWORD')
     if (encoded != null && !encoded.isEmpty() && password != null && !password.isEmpty()) {
+        // base64 容错：从聊天/手机复制长字符串时极易带入换行与空格，
+        // Java 基础解码器遇到空白直接报 "wrong 4-byte ending unit"。
+        // 这里只剥离空白字符（粘贴损坏的常见形态）；缺字符仍会在解码时失败，
+        // 那说明 Secret 存的值本身不完整，需要重新粘贴。
+        def sanitized = encoded.replaceAll("\\s", "")
         def decodedFile = layout.buildDirectory.file('keystore/dsh-mobile-team.jks').get().asFile
         decodedFile.parentFile.mkdirs()
-        decodedFile.bytes = Base64.decoder.decode(encoded)
+        decodedFile.bytes = Base64.decoder.decode(sanitized)
         return [
             storeFile    : decodedFile,
             storePassword: password,
