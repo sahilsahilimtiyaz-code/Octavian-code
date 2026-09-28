@@ -32,14 +32,23 @@ def loadTeamSigning() {
     def encoded = System.getenv('DSH_KEYSTORE_BASE64')
     def password = System.getenv('DSH_KEYSTORE_PASSWORD')
     if (encoded != null && !encoded.isEmpty() && password != null && !password.isEmpty()) {
-        // base64 容错：从聊天/手机复制长字符串时极易带入换行与空格，
-        // Java 基础解码器遇到空白直接报 "wrong 4-byte ending unit"。
-        // 这里只剥离空白字符（粘贴损坏的常见形态）；缺字符仍会在解码时失败，
+        // base64 容错：从聊天/手机复制长字符串时极易带入换行、空格乃至
+        // 零宽字符，Java 基础解码器遇到非字母表字符直接报
+        // "wrong 4-byte ending unit"。这里只保留 base64 字母表字符
+        // （粘贴损坏的常见形态全在此列）；缺字符仍会在解码时失败，
         // 那说明 Secret 存的值本身不完整，需要重新粘贴。
-        def sanitized = encoded.replaceAll("\\s", "")
+        def sanitized = encoded.replaceAll("[^A-Za-z0-9+/=]", "")
         def decodedFile = layout.buildDirectory.file('keystore/dsh-mobile-team.jks').get().asFile
         decodedFile.parentFile.mkdirs()
-        decodedFile.bytes = Base64.decoder.decode(sanitized)
+        try {
+            decodedFile.bytes = Base64.decoder.decode(sanitized)
+        } catch (IllegalArgumentException decoding) {
+            throw new GradleException(
+                "DSH_KEYSTORE_BASE64 无效：清洗后长度为 ${sanitized.length()}（合法 base64 长度应为 4 的倍数）。"
+                + "Secret 里存的值在复制时缺字符了，请删除该 Secret 后重建并完整粘贴（单行、连贯、无缺失）。",
+                decoding,
+            )
+        }
         return [
             storeFile    : decodedFile,
             storePassword: password,
