@@ -145,11 +145,23 @@ class HarnessActivity : AppCompatActivity() {
         // 入口 URL：index.html 是唯一没有内容哈希的产物，它的缓存键必须同时带上 APK 版本与
         // 已安装运行时版本，否则在线更新运行之后 WebView 会继续复用旧前端。
         // 运行时未安装 / 清单不可读时由 withVersions 落到固定占位值，不会让 URL 抖动。
-        val entryUrl = HarnessPageUrl.withVersions(
-            allowedOrigin.initialUrl,
-            BuildConfig.VERSION_NAME,
-            runtimeStore.installedManifest()?.version,
-        )
+        // 清单版本损坏（非空非法值）时 withVersions 会抛错：退回占位版本键（绕开缓存），
+        // 聊天入口不断；连占位都拼不出来才是真的没法开，这时才 toast 并返回。
+        val entryUrl = try {
+            HarnessPageUrl.withVersions(
+                allowedOrigin.initialUrl,
+                BuildConfig.VERSION_NAME,
+                runtimeStore.installedManifest()?.version,
+            )
+        } catch (_: IllegalArgumentException) {
+            try {
+                HarnessPageUrl.withAppVersion(allowedOrigin.initialUrl, BuildConfig.VERSION_NAME)
+            } catch (_: IllegalArgumentException) {
+                Toast.makeText(this, R.string.harness_session_failed, Toast.LENGTH_SHORT).show()
+                returnToMainActivity()
+                return
+            }
+        }
 
         webView = findViewById(R.id.harness_web_view)
         webView.settings.apply {
@@ -181,11 +193,22 @@ class HarnessActivity : AppCompatActivity() {
             // fontScale 不在 configChanges 里，系统改字号会重建本 Activity，因此读一次即可。
             textZoom = AppTextScale.percentOf(resources.configuration.fontScale)
         }
-        val cookieManager = CookieManager.getInstance().apply {
-            setAcceptCookie(true)
-            setAcceptThirdPartyCookies(webView, false)
+        val cookieManager = try {
+            CookieManager.getInstance().apply {
+                setAcceptCookie(true)
+                setAcceptThirdPartyCookies(webView, false)
+            }
+        } catch (_: Throwable) {
+            // 系统 WebView 被禁用/损坏时 getInstance 直接抛：崩溃不如 toast 并返回。
+            Toast.makeText(this, R.string.harness_session_failed, Toast.LENGTH_SHORT).show()
+            returnToMainActivity()
+            return
         }
-        WebViewDatabase.getInstance(this).clearHttpAuthUsernamePassword()
+        try {
+            WebViewDatabase.getInstance(this).clearHttpAuthUsernamePassword()
+        } catch (_: Throwable) {
+            // 可选清理，失败不影响会话建立。
+        }
         webView.webViewClient = RestrictedWebViewClient(
             allowedOrigin,
             access.username,
@@ -196,7 +219,11 @@ class HarnessActivity : AppCompatActivity() {
         // 这类入口在手机上完全不可用的根因（皮肤中心只能靠手填容器路径绕过）。
         webView.webChromeClient = HarnessWebChromeClient()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-            WebView.startSafeBrowsing(applicationContext, null)
+            try {
+                WebView.startSafeBrowsing(applicationContext, null)
+            } catch (_: Throwable) {
+                // 可选防护：起不来只是少一层安全浏览，不值得为此拦掉整个聊天入口。
+            }
         }
 
         // WebSocket 的 Basic challenge 不会触发 onReceivedHttpAuthRequest，因此使用
@@ -227,11 +254,15 @@ class HarnessActivity : AppCompatActivity() {
         // 页面可能仍在等待选择结果：必须显式回传 null，否则该 input 会永久处于"等待选择文件"。
         deliverFileChooserResult(emptyList())
         if (::webView.isInitialized) {
-            webView.stopLoading()
-            webView.webChromeClient = null
-            webView.webViewClient = WebViewClient()
-            webView.removeAllViews()
-            webView.destroy()
+            try {
+                webView.stopLoading()
+                webView.webChromeClient = null
+                webView.webViewClient = WebViewClient()
+                webView.removeAllViews()
+                webView.destroy()
+            } catch (_: Throwable) {
+                // 渲染进程已死等极端情况下 destroy 可能再抛：Activity 正在退出，吞掉即可。
+            }
         }
         if (!isChangingConfigurations) {
             AppAuthenticationState.revokeHarness()
@@ -459,8 +490,13 @@ class HarnessActivity : AppCompatActivity() {
         }
 
         override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
-            view?.destroy()
-            (view?.context as? HarnessActivity)?.finish()
+            // view 就是本 Activity 的 webView：销毁统一交给 onDestroy，
+            // 这里再 destroy 一次会在重载荷聊天时抛 IllegalStateException。
+            // 直接 finish：onDestroy 做唯一一次 teardown。
+            val activity = view?.context as? HarnessActivity
+            if (activity != null && !activity.isFinishing) {
+                activity.finish()
+            }
             return true
         }
 

@@ -96,6 +96,17 @@
   --weight-bold: 700;
   --weight-semibold: 650;
   --weight-medium: 600;
+  /* 动效与轻奢点缀：缓动曲线无颜色只定义一次；金色与投影含颜色，深色块里成对重写。 */
+  --ease-luxe: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+  --gold: #8a6d2f;
+  --gold-soft: #faf3e3;
+  --gold-line: #e3d3a8;
+  --gold-text: #6e5620;
+  --brand-grad-from: #3b6fe0;
+  --brand-grad-to: #1e3a8a;
+  --shadow-lift: 0 16px 44px rgb(27 39 55 / 14%);
+  --glow-gold: 0 0 0 1px rgb(138 109 47 / 18%), 0 8px 28px rgb(138 109 47 / 16%);
 }
 
 /*
@@ -175,6 +186,14 @@
   --shadow-toast: 0 12px 35px rgb(0 0 0 / 55%);
   --shadow-dialog: 0 24px 70px rgb(0 0 0 / 65%);
   --ring: 3px solid rgb(134 171 255 / 45%);
+  --gold: #e3c07f;
+  --gold-soft: #2a2113;
+  --gold-line: #5d4a20;
+  --gold-text: #f0d29a;
+  --brand-grad-from: #9dbcff;
+  --brand-grad-to: #315fcf;
+  --shadow-lift: 0 18px 50px rgb(0 0 0 / 60%);
+  --glow-gold: 0 0 0 1px rgb(227 192 127 / 22%), 0 8px 30px rgb(227 192 127 / 14%);
 }
 
 /*
@@ -284,6 +303,14 @@ button:disabled {
   background: var(--header-bg);
 }
 
+@supports (backdrop-filter: blur(1px)) {
+  /* 磨砂页头：内容上滑时透出底色，有纵深无割裂；不支持则静默回退纯色。 */
+  .mobile-header {
+    backdrop-filter: blur(14px) saturate(1.2);
+    -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  }
+}
+
 .header-actions,
 .heading-actions {
   display: flex;
@@ -315,23 +342,27 @@ button:disabled {
   margin-right: 8px;
   border-radius: 8px;
   color: var(--on-solid);
-  background: var(--brand-bg);
+  background: linear-gradient(135deg, var(--brand-grad-from), var(--brand-grad-to));
+  box-shadow: var(--shadow-segment);
 }
 
 .brand-name {
   font-size: 1rem;
   font-weight: var(--weight-bold);
+  letter-spacing: 0.01em;
 }
 
 .brand-badge {
   margin-left: 7px;
   padding: 3px 5px;
+  border: 1px solid var(--gold-line);
   border-radius: 4px;
-  color: var(--on-solid);
-  background: var(--brand-bg);
+  color: var(--gold-text);
+  background: var(--gold-soft);
   font-size: 0.5625rem;
   font-weight: var(--weight-bold);
   line-height: 1;
+  letter-spacing: 0.08em;
 }
 
 .phase-badge {
@@ -459,7 +490,7 @@ button:disabled {
 }
 
 .button:not(:disabled):active {
-  transform: translateY(1px);
+  transform: translateY(1px) scale(0.98);
 }
 
 .button-primary {
@@ -505,7 +536,11 @@ button:disabled {
   color: var(--ink);
   background: var(--surface);
   cursor: pointer;
-  transition: background-color 150ms ease, border-color 150ms ease;
+  transition: background-color 150ms ease, border-color 150ms ease, transform 150ms var(--ease-spring);
+}
+
+.icon-button:not(:disabled):active {
+  transform: scale(0.92);
 }
 
 .icon-button:not(:disabled):hover {
@@ -1511,6 +1546,142 @@ button:disabled {
   cursor: pointer;
 }
 
+/*
+ * 自有聊天界面（OpenCode 引擎）：会话条、消息气泡与输入行。
+ * 气泡是圆角卡片语汇的延续——用户消息用金色描边点出身份，助手消息贴底色；
+ * 入场走 message-in，输入中省略号复用 typing-dots。
+ */
+.engine-picker {
+  flex-wrap: wrap;
+}
+
+.engine-beta {
+  margin-left: 5px;
+  padding: 1px 5px;
+  border-radius: var(--radius-chip);
+  background: var(--gold-soft);
+  color: var(--gold-text);
+  font-size: 0.625rem;
+  font-weight: var(--weight-bold);
+}
+
+.chat-engine {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+.chat-serverbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.chat-sessions {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.chat-session {
+  flex: none;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-height: 2.5rem;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-chip);
+  color: var(--muted);
+  background: var(--surface);
+  font-size: 0.8125rem;
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+  transition: color 150ms ease, border-color 150ms ease, background-color 150ms ease;
+}
+
+.chat-session.active {
+  color: var(--gold-text);
+  border-color: var(--gold-line);
+  background: var(--gold-soft);
+}
+
+.chat-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 180px;
+  max-height: 52dvh;
+  overflow-y: auto;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--surface-sunken);
+}
+
+.chat-message {
+  display: flex;
+}
+
+.chat-message.user {
+  justify-content: flex-end;
+}
+
+.chat-message.assistant {
+  justify-content: flex-start;
+}
+
+.chat-bubble {
+  max-width: 88%;
+  padding: 10px 14px;
+  border-radius: var(--radius-card);
+  font-size: 0.875rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-message.user .chat-bubble {
+  border: 1px solid var(--gold-line);
+  color: var(--ink);
+  background: var(--gold-soft);
+}
+
+.chat-message.assistant .chat-bubble {
+  border: 1px solid var(--line);
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+}
+
+.chat-composer {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.chat-composer input {
+  flex: 1;
+  min-width: 0;
+  min-height: 2.75rem;
+  padding: 10px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  color: var(--ink);
+  background: var(--surface);
+  font-size: 0.875rem;
+}
+
+.chat-composer input:focus {
+  border-color: var(--blue);
+  outline: none;
+  box-shadow: var(--glow-gold);
+}
+
 .spin {
   animation: spin 900ms linear infinite;
 }
@@ -1527,6 +1698,115 @@ button:disabled {
   0% { transform: translateX(-100%); }
   100% { transform: translateX(225%); }
 }
+
+/*
+ * 动效体系：全部 CSS、无 JS 驱动，统一走 --ease-luxe（指数级缓出，起手快收尾柔）。
+ * 入场只做「淡入 + 上浮」，位移控制在 14px 内，低端机也不掉帧；
+ * 列表用 nth-child 错峰，前 8 项之后不再追加延迟（滚动复用时不拖沓）。
+ * reduced-motion 下方已有全局兜底（全部压到 1ms），这里不再重复。
+ */
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pop-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* 消息气泡入场：比面板更克制（8px + 0.98 缩放），连续多条不晕。 */
+@keyframes message-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.45; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
+/* 屏级入场：标题、启动面板、概览卡、设置分区依次浮现。 */
+.screen-heading,
+.launch-panel,
+.runtime-overview,
+.settings-section {
+  animation: rise-in 480ms var(--ease-luxe) backwards;
+}
+
+.settings-section:nth-of-type(2) { animation-delay: 60ms; }
+.settings-section:nth-of-type(3) { animation-delay: 120ms; }
+.settings-section:nth-of-type(n+4) { animation-delay: 160ms; }
+
+/* 列表错峰：管理行、终端 agent 选项逐行浮现，8 项封顶。 */
+.management-row,
+.segmented button {
+  animation: rise-in 420ms var(--ease-luxe) backwards;
+}
+
+.management-row:nth-child(2), .segmented button:nth-child(2) { animation-delay: 40ms; }
+.management-row:nth-child(3), .segmented button:nth-child(3) { animation-delay: 80ms; }
+.management-row:nth-child(4), .segmented button:nth-child(4) { animation-delay: 120ms; }
+.management-row:nth-child(5), .segmented button:nth-child(5) { animation-delay: 160ms; }
+.management-row:nth-child(6), .segmented button:nth-child(6) { animation-delay: 200ms; }
+.management-row:nth-child(7), .segmented button:nth-child(7) { animation-delay: 240ms; }
+.management-row:nth-child(n+8), .segmented button:nth-child(n+8) { animation-delay: 280ms; }
+
+.dialog {
+  animation: pop-in 320ms var(--ease-spring) backwards;
+}
+
+.dialog-backdrop {
+  animation: fade-in 220ms ease backwards;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.toast {
+  animation: toast-in 340ms var(--ease-spring) backwards;
+}
+
+/* 通用工具类：聊天消息、骨架屏、输入中省略号，后续界面直接复用。 */
+.message-in {
+  animation: message-in 360ms var(--ease-luxe) backwards;
+}
+
+.skeleton {
+  border-radius: var(--radius-inner);
+  background: linear-gradient(100deg, var(--surface-muted) 30%, var(--surface-hover) 50%, var(--surface-muted) 70%);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+.typing-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.typing-dots > span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+  animation: typing-bounce 1.2s ease-in-out infinite;
+}
+
+.typing-dots > span:nth-child(2) { animation-delay: 150ms; }
+.typing-dots > span:nth-child(3) { animation-delay: 300ms; }
 
 @media (min-width: 620px) {
   .screen {

@@ -27,6 +27,8 @@ class MobileRuntimeController(
     private val installer = RuntimeInstaller(store, status, externalCancellation = closed::get)
     private val agentInstaller = RuntimeAgentInstaller(store, status, externalCancellation = closed::get)
     private val supervisor = RuntimeSupervisor(context, store, status)
+    /** 本机 Agent 服务（opencode serve）：与 Harness 独立的进程与端口。 */
+    private val agentEngine = AgentEngineServer(store)
     private val plugins = RuntimePluginManager(context, store)
     /** 自检实例与 store、生命周期锁同源：插件侧不自行构造 RuntimeStore。 */
     private val selfCheck = RuntimeSelfCheck(context, store)
@@ -73,6 +75,64 @@ class MobileRuntimeController(
             throw RuntimeFailure("RUNTIME_BUSY", "请先停止 Harness 和 Ubuntu 终端")
         }
         agentInstaller.install(name) { !supervisor.isRunning() && !terminals.hasRuntimeSessions() }
+    }
+
+    /**
+     * 本机 Agent 服务状态：只读，不需要停止任何东西。
+     */
+    fun agentEngineState(): AgentEngineState = lifecycleLock.withLock {
+        ensureOpen()
+        agentEngine.state()
+    }
+
+    /**
+     * 启动本机 Agent 服务（`opencode serve`）。
+     *
+     * 与 Harness 共用同一份访客环境文件落点，因此 Harness 运行时拒绝启动
+     * （先停 Harness 再起服务）。Ubuntu 终端可以共存：终端不读写
+     * `/usr/local/bin`，也碰不到投递文件。
+     */
+    fun startAgentServer(port: Int?): AgentEngineState = lifecycleLock.withLock {
+        ensureOpen()
+        if (supervisor.isRunning()) {
+            throw RuntimeFailure("RUNTIME_BUSY", "请先停止 Harness 再启动 Agent 服务")
+        }
+        agentEngine.start(port)
+    }
+
+    /**
+     * 停止本机 Agent 服务；幂等，任何时候都可调用。
+     */
+    fun stopAgentServer(): AgentEngineState = lifecycleLock.withLock {
+        ensureOpen()
+        agentEngine.stop()
+    }
+
+    /**
+     * Agent 聊天中继（原文透传）：会话列表、建会话、读消息、发消息。
+     *
+     * 返回服务端 JSON 原文：解析与形态校验在 TypeScript 侧做，原生侧只负责
+     * 代发 HTTP（Web 侧直连会被跨域拦、密码也过不了桥）。
+     * 服务未运行时报 `AGENT_ENGINE_STOPPED`，界面据此展示启动入口。
+     */
+    fun agentChatSessions(): String = lifecycleLock.withLock {
+        ensureOpen()
+        agentEngine.chatSessions()
+    }
+
+    fun agentChatCreate(title: String): String = lifecycleLock.withLock {
+        ensureOpen()
+        agentEngine.chatCreate(title.trim())
+    }
+
+    fun agentChatHistory(sessionId: String): String = lifecycleLock.withLock {
+        ensureOpen()
+        agentEngine.chatHistory(sessionId)
+    }
+
+    fun agentChatSend(sessionId: String, text: String): String = lifecycleLock.withLock {
+        ensureOpen()
+        agentEngine.chatSend(sessionId, text)
     }
 
     /**

@@ -28,6 +28,8 @@ import type {
   RuntimeVersionsState,
   AgentCliState,
   AgentCliStates,
+  AgentChatJson,
+  AgentEngineServerState,
   ShizukuState,
   StorageAccessState,
   StorageDirAvailability,
@@ -525,6 +527,82 @@ export function validateAgentCliStates(value: unknown): AgentCliStates {
     }
   })
   return { agents }
+}
+
+const AGENT_SERVER_PORT_MIN = 1024
+const AGENT_SERVER_PORT_MAX = 65535
+
+/** 本机 Agent 服务端口：只接受用户态端口区间，越界在过桥前拒绝。 */
+export function validateAgentServerPort(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < AGENT_SERVER_PORT_MIN || value > AGENT_SERVER_PORT_MAX) {
+    throw new Error('Agent 服务端口无效')
+  }
+  return value
+}
+
+/**
+ * 本机 Agent 服务状态：运行位 + 端口 + 地址（未运行时地址为 null）。
+ *
+ * 地址只做形态检查（http loopback + 端口一致）；密码**不在**桥接载荷里，
+ * 这里也不接收它——聊天客户端的认证由用户在引擎登录流程里另行完成。
+ */
+export function validateAgentEngineServerState(value: unknown): AgentEngineServerState {
+  const state = asRecord(value, 'Agent 服务状态')
+  const running = requiredBoolean(state.running, 'Agent 服务运行位')
+  const port = validateAgentServerPort(state.port)
+  const baseUrl = state.baseUrl
+  if (baseUrl !== null && baseUrl !== undefined) {
+    if (typeof baseUrl !== 'string') throw new Error('Agent 服务地址格式无效')
+    let parsed: URL
+    try {
+      parsed = new URL(baseUrl)
+    } catch {
+      throw new Error('Agent 服务地址格式无效')
+    }
+    if (parsed.protocol !== 'http:' || (parsed.hostname !== '127.0.0.1' && parsed.hostname !== 'localhost') || parsed.port !== String(port)) {
+      throw new Error('Agent 服务地址格式无效')
+    }
+    return { running, port, baseUrl }
+  }
+    return { running, port, baseUrl: null }
+}
+
+const AGENT_CHAT_JSON_MAX_CHARS = 8 * 1024 * 1024
+const AGENT_CHAT_TITLE_MAX_CHARS = 120
+const AGENT_CHAT_TEXT_MAX_CHARS = 32_000
+const AGENT_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
+
+/** 中继原文：必须是字符串形态的 JSON，超长直接拒绝（防服务端异常撑爆桥）。 */
+export function validateAgentChatJson(value: unknown): AgentChatJson {
+  const record = asRecord(value, 'Agent 聊天载荷')
+  if (typeof record.json !== 'string' || record.json.length > AGENT_CHAT_JSON_MAX_CHARS) {
+    throw new Error('Agent 聊天载荷格式无效')
+  }
+  return { json: record.json }
+}
+
+/** 会话标题：去空后 1–120 字符。 */
+export function validateAgentChatTitle(value: unknown): string {
+  if (typeof value !== 'string') throw new Error('会话标题无效')
+  const title = value.trim()
+  if (title === '' || title.length > AGENT_CHAT_TITLE_MAX_CHARS) throw new Error('会话标题无效')
+  return title
+}
+
+/** 会话标识：opencode 形态（字母数字 + 下划线/连字符，64 以内）。 */
+export function validateAgentSessionId(value: unknown): string {
+  if (typeof value !== 'string' || !AGENT_SESSION_ID_PATTERN.test(value)) {
+    throw new Error('会话标识无效')
+  }
+  return value
+}
+
+/** 聊天正文：非空，上限 32k（与原生侧一致，粘贴文件也够用）。 */
+export function validateAgentChatText(value: unknown): string {
+  if (typeof value !== 'string' || value === '' || value.length > AGENT_CHAT_TEXT_MAX_CHARS) {
+    throw new Error('消息内容无效')
+  }
+  return value
 }
 
 export function validateRuntimeProgress(value: unknown): RuntimeProgress {  const progress = asRecord(value, '运行时进度')

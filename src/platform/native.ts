@@ -35,6 +35,12 @@ import {
   assertTerminalSize,
   validateAgentCliName,
   validateAgentCliStates,
+  validateAgentChatJson,
+  validateAgentChatText,
+  validateAgentChatTitle,
+  validateAgentEngineServerState,
+  validateAgentServerPort,
+  validateAgentSessionId,
   validateAllFilesAccessResult,
   validateDeviceCommand,
   validateDeviceCommandParam,
@@ -108,6 +114,13 @@ interface NativeRuntimePlugin {
   deleteRuntimeVersion(options: { target: string }): Promise<unknown>
   agentCliState(): Promise<unknown>
   installAgentCli(options: { name: string }): Promise<unknown>
+  agentEngineState(): Promise<unknown>
+  startAgentServer(options: { port?: number }): Promise<unknown>
+  stopAgentServer(): Promise<unknown>
+  agentChatSessions(): Promise<unknown>
+  agentChatCreate(options: { title: string }): Promise<unknown>
+  agentChatHistory(options: { sessionId: string }): Promise<unknown>
+  agentChatSend(options: { sessionId: string; text: string }): Promise<unknown>
   getDiagnosticLogState(): Promise<DiagnosticLogState>
   readDiagnosticLog(options: { maxBytes?: number }): Promise<unknown>
   setDiagnosticLogSettings(options: { enabled: boolean; retentionDays: number }): Promise<DiagnosticLogState>
@@ -238,6 +251,23 @@ function createNativeBridge(): RuntimeBridge {
     installAgentCli: name => NativeRuntime
       .installAgentCli({ name: validateAgentCliName(name) })
       .then(validateAgentCliStates),
+    // 本机 Agent 服务（opencode serve）：端口前端先拦，状态载荷不含凭据。
+    agentEngineState: () => NativeRuntime.agentEngineState().then(validateAgentEngineServerState),
+    startAgentServer: port => NativeRuntime
+      .startAgentServer(port === undefined ? {} : { port: validateAgentServerPort(port) })
+      .then(validateAgentEngineServerState),
+    stopAgentServer: () => NativeRuntime.stopAgentServer().then(validateAgentEngineServerState),
+    // Agent 聊天中继：id/标题/正文形态前端先拦，原生侧代发 HTTP 后原文返回。
+    agentChatSessions: () => NativeRuntime.agentChatSessions().then(validateAgentChatJson),
+    agentChatCreate: title => NativeRuntime
+      .agentChatCreate({ title: validateAgentChatTitle(title) })
+      .then(validateAgentChatJson),
+    agentChatHistory: sessionId => NativeRuntime
+      .agentChatHistory({ sessionId: validateAgentSessionId(sessionId) })
+      .then(validateAgentChatJson),
+    agentChatSend: (sessionId, text) => NativeRuntime
+      .agentChatSend({ sessionId: validateAgentSessionId(sessionId), text: validateAgentChatText(text) })
+      .then(validateAgentChatJson),
     readDiagnosticLog: options => NativeRuntime.readDiagnosticLog({ maxBytes: options?.maxBytes }).then(validateDiagnosticLogText),
     getDiagnosticLogState: () => NativeRuntime.getDiagnosticLogState().then(validateDiagnosticLogState),
     setDiagnosticLogSettings: (enabled, retentionDays) => {

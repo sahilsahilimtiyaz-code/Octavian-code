@@ -1,6 +1,8 @@
 import { validatePluginRequest } from './plugins'
 import type {
   AgentCliStates,
+  AgentChatJson,
+  AgentEngineServerState,
   DiagnosticLogState,
   DiagnosticLogText,
   HarnessLog,
@@ -347,6 +349,20 @@ export function createBrowserBridge(): RuntimeBridge {
     // 浏览器预览里没有访客运行时，也没有可下载的 Agent：状态按空列表返回，安装如实拒绝。
     agentCliState: (): Promise<AgentCliStates> => Promise.resolve({ agents: [] }),
     installAgentCli: (): Promise<AgentCliStates> => Promise.reject(new Error('浏览器预览不支持下载 Agent')),
+    // 浏览器预览没有本机 Agent 服务：状态按未运行返回，启停如实拒绝。
+    agentEngineState: (): Promise<AgentEngineServerState> =>
+      Promise.resolve({ running: false, port: 4097, baseUrl: null }),
+    startAgentServer: (): Promise<AgentEngineServerState> =>
+      Promise.reject(new Error('浏览器预览不支持本机 Agent 服务')),
+    stopAgentServer: (): Promise<AgentEngineServerState> =>
+      Promise.resolve({ running: false, port: 4097, baseUrl: null }),
+    // 浏览器预览没有本机服务可中继：读操作给空结果，写操作如实拒绝。
+    agentChatSessions: (): Promise<AgentChatJson> => Promise.resolve({ json: '[]' }),
+    agentChatCreate: (): Promise<AgentChatJson> =>
+      Promise.reject(new Error('浏览器预览不支持本机 Agent 聊天')),
+    agentChatHistory: (): Promise<AgentChatJson> => Promise.resolve({ json: '[]' }),
+    agentChatSend: (): Promise<AgentChatJson> =>
+      Promise.reject(new Error('浏览器预览不支持本机 Agent 聊天')),
     // 浏览器预览没有原生诊断日志：保持关闭且不可导出，避免给出「已经采集到东西」的错觉。
     getDiagnosticLogState: (): Promise<DiagnosticLogState> => Promise.resolve({ ...diagnosticState }),
     // 同理，预览里没有可查看的正文；返回空窗口而不是编造几条假记录。

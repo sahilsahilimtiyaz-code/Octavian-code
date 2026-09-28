@@ -53,6 +53,8 @@ import { CustomProviders } from './components/CustomProviders'
 import { applyTheme, readThemeMode, saveThemeMode, useResolvedTheme, useThemeMode } from './theme'
 import type { ThemeMode } from './theme'
 import { AGENT_COMMANDS, AGENT_LOGIN_HINTS, findAgentCommand } from './agentCommands'
+import { AGENT_ENGINES, readEngineId, saveEngineId, type EngineId } from './agentEngines'
+import { OpenCodeChatPanel } from './components/OpenCodeChatPanel'
 import { runtimeBridge } from './platform/native'
 import { readLogInsights } from './logInsights'
 import { validateHarnessPermissionMode } from './harnessPermissionMode'
@@ -79,6 +81,7 @@ import type {
   ModelProviderId,
   OverlayBallState,
   ProviderApiKeys,
+  RuntimeBridge,
   RuntimePhase,
   RuntimeProgress,
   RuntimeSettings,
@@ -700,19 +703,27 @@ function withTimeout<T>(promise: Promise<T>, milliseconds: number): Promise<T | 
 
 interface ConversationScreenProps {
   busy: string | null
+  bridge: RuntimeBridge
   keepAlive: KeepAliveState
   runtime: RuntimeState
   onInstall: () => void
   onLaunch: () => void
   onOpenSettings: () => void
   onOpenTerminal: () => void
+  onOpenTerminalWithAgent: (command: string) => void
   onUpdate: () => void
 }
 
-function ConversationScreen({ busy, keepAlive, runtime, onInstall, onLaunch, onOpenSettings, onOpenTerminal, onUpdate }: ConversationScreenProps) {
+function ConversationScreen({ busy, bridge, keepAlive, runtime, onInstall, onLaunch, onOpenSettings, onOpenTerminal, onOpenTerminalWithAgent, onUpdate }: ConversationScreenProps) {
   const installed = runtimeInstalled(runtime)
   const transitioning = runtimeTransitioning(runtime)
   const updateRequired = installed && runtime.updateAvailable && !transitioning
+  const [engineId, setEngineId] = useState<EngineId>(() => readEngineId())
+  const engine = AGENT_ENGINES.find(item => item.id === engineId) ?? AGENT_ENGINES[0]
+
+  const pickEngine = (id: EngineId) => {
+    if (saveEngineId(id)) setEngineId(id)
+  }
   const progress = runtime.totalBytes > 0
     ? Math.min(100, Math.round((runtime.downloadedBytes / runtime.totalBytes) * 100))
     : 0
@@ -727,6 +738,52 @@ function ConversationScreen({ busy, keepAlive, runtime, onInstall, onLaunch, onO
         </div>
       </div>
 
+      <div className="segmented engine-picker" role="tablist" aria-label={t("聊天引擎")}>
+        {AGENT_ENGINES.map(item => (
+          <button
+            key={item.id}
+            type="button"
+            role="tab"
+            aria-selected={item.id === engineId}
+            className={item.id === engineId ? 'active' : ''}
+            title={item.tagline}
+            onClick={() => pickEngine(item.id)}
+          >
+            {item.name}
+            {item.status === 'beta' && <small className="engine-beta">Beta</small>}
+          </button>
+        ))}
+      </div>
+      <p className="settings-note">{engine.tagline}</p>
+
+      {engine.transport === 'opencode-serve' ? (
+        <OpenCodeChatPanel
+          bridge={bridge}
+          installed={installed}
+          harnessRunning={runtime.phase === 'running'}
+          onInstall={onInstall}
+          onOpenTerminal={onOpenTerminal}
+        />
+      ) : engine.transport === 'pty' && engine.cliCommand !== undefined ? (
+        <section className="launch-panel">
+          <div className="launch-copy">
+            <h2>{engine.name}</h2>
+            <p>{engine.tagline}</p>
+          </div>
+          <div className="launch-actions">
+            <button
+              className="button button-primary"
+              type="button"
+              onClick={() => onOpenTerminalWithAgent(engine.cliCommand as string)}
+              disabled={!installed || transitioning}
+              title={!installed ? t("请先安装运行环境。") : undefined}
+            >
+              <SquareTerminal size={18} />{t("在终端中打开")}
+            </button>
+          </div>
+        </section>
+      ) : null}
+      {engine.transport === 'harness' && (
       <section className="launch-panel">
         <span className="launch-icon" aria-hidden="true">
           {busy === 'launch' || transitioning ? <Loader2 className="spin" size={30} /> : updateRequired ? <RefreshCw size={30} /> : <img src={appMark} alt="" width={38} height={38} />}
@@ -790,6 +847,7 @@ function ConversationScreen({ busy, keepAlive, runtime, onInstall, onLaunch, onO
             <Settings2 size={18} />{t("应用设置")}</button>
         </div>
       </section>
+      )}
 
       {keepAlive.reconnectRequired && !transitioning && (
         <div className="inline-alert warning" role="alert">
@@ -1083,9 +1141,12 @@ function EnvironmentScreen({ busy, bundledSource, runtime, onBack, onInstall, on
 interface TerminalScreenProps {
   bridge: typeof runtimeBridge
   fontSize: number
+  /** 引擎页点过来的单次直达命令：挂载时自动敲入一次，随即由 onConsumeInitialAgent 清掉。 */
+  initialAgent?: string | null
   onAuthorize: () => void
   onBack: () => void
   onConnect: () => void
+  onConsumeInitialAgent?: () => void
   onError: (message: string) => void
   onOpenEnvironment: () => void
   onOpenShizuku: () => void
@@ -1093,7 +1154,7 @@ interface TerminalScreenProps {
   shizuku: ShizukuState
 }
 
-function TerminalScreen({ bridge, fontSize, onAuthorize, onBack, onConnect, onError, onOpenEnvironment, onOpenShizuku, runtime, shizuku }: TerminalScreenProps) {
+function TerminalScreen({ bridge, fontSize, initialAgent, onAuthorize, onBack, onConnect, onConsumeInitialAgent, onError, onOpenEnvironment, onOpenShizuku, runtime, shizuku }: TerminalScreenProps) {
   const [kind, setKind] = useState<TerminalKind>('ubuntu')
   const [epoch, setEpoch] = useState(0)
   const [agent, setAgent] = useState<string | null>(null)
@@ -1126,6 +1187,20 @@ function TerminalScreen({ bridge, fontSize, onAuthorize, onBack, onConnect, onEr
     // 换 Agent 即重建会话：新会话就绪后由 initialCommand 自动敲入命令。
     setEpoch(value => value + 1)
   }
+
+  // 引擎页的单次直达：只在挂载时消费一次，未知命令直接忽略。
+  const consumedInitialAgent = useRef(false)
+  useEffect(() => {
+    if (consumedInitialAgent.current || initialAgent == null) return
+    if (findAgentCommand(initialAgent) === undefined) {
+      onConsumeInitialAgent?.()
+      return
+    }
+    consumedInitialAgent.current = true
+    setAgent(initialAgent)
+    setEpoch(value => value + 1)
+    onConsumeInitialAgent?.()
+  }, [initialAgent, onConsumeInitialAgent])
 
   const selectedAgent = agent === null ? undefined : findAgentCommand(agent)
   const agyLocked = selectedAgent?.command === 'agy' && agyInstalled !== true
@@ -3135,6 +3210,11 @@ export function App() {
   const language = useLanguage()
   useEffect(() => { document.documentElement.lang = language ?? 'zh-CN' }, [language])
   const [activeView, setActiveViewState] = useState<AppView>(ROOT_VIEW)
+  /** 引擎页点过来的终端直达命令：TerminalScreen 挂载消费一次，随即清掉。 */
+  const [terminalAgentRequest, setTerminalAgentRequest] = useState<string | null>(null)
+  const consumeTerminalAgent = useCallback(() => {
+    setTerminalAgentRequest(null)
+  }, [])
   /**
    * 当前视图的同步真值：导航与历史回退都先改它再改状态。
    * 同一视图重复导航（例如启动成功后再次切到设置）由此判重，不会往历史里堆冗余记录。
@@ -3335,6 +3415,14 @@ export function App() {
     setActiveViewState(next)
     pushViewEntry(next)
   }, [])
+
+  /**
+   * 引擎页直达终端：带上要自动敲入的 Agent 命令，走正常导航（历史、回退语义不变）。
+   */
+  const openTerminalWithAgent = useCallback((command: string) => {
+    setTerminalAgentRequest(command)
+    setActiveView('terminal')
+  }, [setActiveView])
 
   /**
    * 屏幕内返回按钮：回到上一级视图。
@@ -4134,9 +4222,9 @@ export function App() {
   const screen = (() => {
     switch (activeView) {
       case 'conversation':
-        return <ConversationScreen busy={busy} keepAlive={keepAlive} runtime={runtime} onInstall={installRuntime} onLaunch={launchHarness} onOpenSettings={() => setActiveView('settings')} onOpenTerminal={() => setActiveView('terminal')} onUpdate={requestRuntimeUpdate} />
+        return <ConversationScreen busy={busy} bridge={runtimeBridge} keepAlive={keepAlive} runtime={runtime} onInstall={installRuntime} onLaunch={launchHarness} onOpenSettings={() => setActiveView('settings')} onOpenTerminal={() => setActiveView('terminal')} onOpenTerminalWithAgent={openTerminalWithAgent} onUpdate={requestRuntimeUpdate} />
       case 'terminal':
-        return <TerminalScreen bridge={runtimeBridge} fontSize={settings?.terminalFontSize ?? 14} onAuthorize={requestShizukuPermission} onBack={() => backToView('settings')} onConnect={connectShizuku} onError={terminalError} onOpenEnvironment={() => setActiveView('environment')} onOpenShizuku={openShizuku} runtime={runtime} shizuku={shizuku} />
+        return <TerminalScreen bridge={runtimeBridge} fontSize={settings?.terminalFontSize ?? 14} initialAgent={terminalAgentRequest} onAuthorize={requestShizukuPermission} onBack={() => backToView('settings')} onConnect={connectShizuku} onConsumeInitialAgent={consumeTerminalAgent} onError={terminalError} onOpenEnvironment={() => setActiveView('environment')} onOpenShizuku={openShizuku} runtime={runtime} shizuku={shizuku} />
       case 'plugins':
         return <PluginSettings bridge={runtimeBridge} runtime={runtime} onBack={() => backToView('settings')} />
       case 'environment':

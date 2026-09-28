@@ -101,6 +101,24 @@ export interface AgentCliStates {
   agents: AgentCliState[]
 }
 
+/**
+ * 本机 Agent 服务（`opencode serve`）的状态：只含运行位、端口与可访问地址，
+ * 不含密码与任何凭据。未运行时 baseUrl 为 null。
+ */
+export interface AgentEngineServerState {
+  running: boolean
+  port: number
+  baseUrl: string | null
+}
+
+/**
+ * Agent 聊天中继原文：原生侧代发 HTTP 后，把服务端 JSON 原样带回来，
+ * 解析与形态校验在前端做（`parseSessionList` / `parseMessageList`）。
+ */
+export interface AgentChatJson {
+  json: string
+}
+
 export interface RuntimeSource {
   manifestUrl: string
   manifestSha256: string
@@ -649,6 +667,20 @@ export interface RuntimeBridge {
   agentCliState: () => Promise<AgentCliStates>
   /** 下载并安装一个清单声明的 Agent；运行时必须空闲，否则原生侧报忙。 */
   installAgentCli: (name: string) => Promise<AgentCliStates>
+  /** 本机 Agent 服务状态（运行位 + 端口 + 地址，不含凭据）。 */
+  agentEngineState: () => Promise<AgentEngineServerState>
+  /** 启动本机 Agent 服务；运行时必须空闲，否则原生侧报忙。 */
+  startAgentServer: (port?: number) => Promise<AgentEngineServerState>
+  /** 停止本机 Agent 服务；幂等，未运行也成功。 */
+  stopAgentServer: () => Promise<AgentEngineServerState>
+  /**
+   * Agent 聊天中继：Web 侧不直连服务（跨域与密码都过不了桥），由原生代发。
+   * 会话 id 形态、标题与正文长度前后两端各拦一道；返回原文 JSON。
+   */
+  agentChatSessions: () => Promise<AgentChatJson>
+  agentChatCreate: (title: string) => Promise<AgentChatJson>
+  agentChatHistory: (sessionId: string) => Promise<AgentChatJson>
+  agentChatSend: (sessionId: string, text: string) => Promise<AgentChatJson>
   addRuntimeProgressListener: (listener: (event: RuntimeProgress) => void) => Promise<ListenerHandle>
   addTerminalOutputListener: (listener: (event: TerminalChunk) => void) => Promise<ListenerHandle>
   addTerminalExitListener: (listener: (event: TerminalExit) => void) => Promise<ListenerHandle>

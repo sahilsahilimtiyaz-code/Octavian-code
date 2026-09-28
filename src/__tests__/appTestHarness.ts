@@ -93,6 +93,13 @@ export const bridge = {
   deleteRuntimeVersion: vi.fn(),
   agentCliState: vi.fn(),
   installAgentCli: vi.fn(),
+  agentEngineState: vi.fn(),
+  startAgentServer: vi.fn(),
+  stopAgentServer: vi.fn(),
+  agentChatSessions: vi.fn(),
+  agentChatCreate: vi.fn(),
+  agentChatHistory: vi.fn(),
+  agentChatSend: vi.fn(),
   managePlugins: vi.fn(),
   getDiagnosticLogState: vi.fn(),
   readDiagnosticLog: vi.fn(),
@@ -295,6 +302,14 @@ export function beforeEachAppTest(): void {
   // 按需 Agent 默认空列表：多数用例不涉及下载，涉及的用例自己覆盖这两条桩。
   bridge.agentCliState.mockResolvedValue({ agents: [] })
   bridge.installAgentCli.mockResolvedValue({ agents: [] })
+  // 本机 Agent 服务默认未运行、聊天中继默认空：多数用例不涉及引擎，涉及的用例自己覆盖。
+  bridge.agentEngineState.mockResolvedValue({ running: false, port: 4097, baseUrl: null })
+  bridge.startAgentServer.mockResolvedValue({ running: true, port: 4097, baseUrl: 'http://127.0.0.1:4097' })
+  bridge.stopAgentServer.mockResolvedValue({ running: false, port: 4097, baseUrl: null })
+  bridge.agentChatSessions.mockResolvedValue({ json: '[]' })
+  bridge.agentChatCreate.mockResolvedValue({ json: '{"id":"test-session","title":"t"}' })
+  bridge.agentChatHistory.mockResolvedValue({ json: '[]' })
+  bridge.agentChatSend.mockResolvedValue({ json: 'null' })
   bridge.managePlugins.mockResolvedValue({ plugins: [] })
   bridge.getDiagnosticLogState.mockResolvedValue({ ...diagnostic })
   bridge.readDiagnosticLog.mockResolvedValue({

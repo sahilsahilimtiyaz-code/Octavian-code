@@ -30,6 +30,7 @@ import com.octacode.agent.runtime.MailboxImportOutcome
 import com.octacode.agent.runtime.MailboxState
 import com.octacode.agent.runtime.MobileRuntimeController
 import com.octacode.agent.runtime.DeviceBridgeAccess
+import com.octacode.agent.runtime.AgentEngineState
 import com.octacode.agent.runtime.RuntimeAgentInstaller
 import com.octacode.agent.runtime.RuntimeEventSink
 import com.octacode.agent.runtime.RuntimeFailure
@@ -235,7 +236,10 @@ class MobileRuntimePlugin : Plugin() {
             // 否则 RuntimeHost 永远判不出「没有订阅者」，运行时就再也释放不掉。
             RuntimeHost.detachPluginSink(eventSink)
             recordAudit(AuditEvent.PLUGIN_LOAD, AuditResult.FAILED)
-            throw error
+            // 不再把异常抛出去：load() 里抛会导致冷启动直接崩溃。
+            // controller 保持未初始化，后续桥调用经既有守卫（::controller.isInitialized
+            // 与 resolveSafely） fail-closed 为 INTERNAL_ERROR，界面显示不可用而不是闪退。
+            return
         }
         // 设备桥只服务设备 Shell，属于可选能力。保活生效时 Harness 进程仍在运行，
         // 桥本应由 RuntimeHost 复用；即便这里真的失败，也绝不能让插件注册失败——
@@ -331,9 +335,10 @@ class MobileRuntimePlugin : Plugin() {
             }
             try {
                 super.handleOnDestroy()
-            } catch (error: Throwable) {
+            } catch (_: Throwable) {
+                // 销毁期异常不能再抛：从 Activity 销毁路径逃出去就是一次
+                // 划掉/旋转时的闪退；审计 FAILED 已足够定位。
                 result = AuditResult.FAILED
-                throw error
             } finally {
                 recordAudit(AuditEvent.PLUGIN_DESTROY, result)
                 // 记录销毁结果与此刻运行时是否仍被前台服务保留：这正是排查
@@ -443,6 +448,75 @@ class MobileRuntimePlugin : Plugin() {
                 if (name.isEmpty()) throw RuntimeFailure("SETTINGS_INVALID", "Agent 名称缺失")
                 controller.installAgentCli(name).toAgentCliJs()
             }
+        }
+    }
+
+    /**
+     * 权限：应用内桥接。
+     * 本机 Agent 服务状态：运行位、端口与 loopback 地址。不含密码。
+     */
+    @PluginMethod
+    fun agentEngineState(call: PluginCall) {
+        resolveWhileActive(call) { controller.agentEngineState().toAgentEngineJs() }
+    }
+
+    /**
+     * 权限：应用内桥接。
+     * 启动本机 Agent 服务（`opencode serve`，默认 4097，可传 port 覆盖）。
+     * Harness 运行时拒绝（RUNTIME_BUSY）：先停 Harness 再启动。
+     */
+    @PluginMethod
+    fun startAgentServer(call: PluginCall) {
+        execute(call) {
+            controller.startAgentServer(call.getInt("port")).toAgentEngineJs()
+        }
+    }
+
+    /**
+     * 权限：应用内桥接。
+     * 停止本机 Agent 服务；幂等，未运行也成功。
+     */
+    @PluginMethod
+    fun stopAgentServer(call: PluginCall) {
+        execute(call) {
+            controller.stopAgentServer().toAgentEngineJs()
+        }
+    }
+
+    /**
+     * 权限：应用内桥接。
+     * Agent 聊天中继：返回服务端 JSON 原文（`{ json }`），解析在前端做。
+     * 服务未运行时报 `AGENT_ENGINE_STOPPED`。
+     */
+    @PluginMethod
+    fun agentChatSessions(call: PluginCall) {
+        execute(call) {
+            JSObject().put("json", controller.agentChatSessions())
+        }
+    }
+
+    @PluginMethod
+    fun agentChatCreate(call: PluginCall) {
+        execute(call) {
+            val title = call.getString("title")?.trim().orEmpty()
+            JSObject().put("json", controller.agentChatCreate(title))
+        }
+    }
+
+    @PluginMethod
+    fun agentChatHistory(call: PluginCall) {
+        execute(call) {
+            val sessionId = call.getString("sessionId")?.trim().orEmpty()
+            JSObject().put("json", controller.agentChatHistory(sessionId))
+        }
+    }
+
+    @PluginMethod
+    fun agentChatSend(call: PluginCall) {
+        execute(call) {
+            val sessionId = call.getString("sessionId")?.trim().orEmpty()
+            val text = call.getString("text").orEmpty()
+            JSObject().put("json", controller.agentChatSend(sessionId, text))
         }
     }
 
@@ -1706,6 +1780,15 @@ class MobileRuntimePlugin : Plugin() {
             )
         }
         return JSObject().put("agents", array)
+    }
+
+    private fun AgentEngineState.toAgentEngineJs(): JSObject {
+        val json = JSObject()
+            .put("running", running)
+            .put("port", port)
+        // 未运行时不放 baseUrl 键：前端校验把缺键当 null 处理，不含密码的载荷里本来就没有它。
+        baseUrl?.let { json.put("baseUrl", it) }
+        return json
     }
 
     private fun List<RuntimeVersionInfo>.toJs(): JSObject {
