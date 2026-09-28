@@ -20,7 +20,9 @@ from pathlib import Path
 
 # 团队密钥库 dsh-mobile-team.jks 的证书指纹（apksigner/keytool 输出的 SHA-256 值）。
 # 指纹是公开信息（APK 内可见），固定于此用于签名一致性校验。
-TEAM_CERT_SHA256 = '6D:1B:5F:23:1D:9B:46:95:61:B8:C3:B7:06:A6:30:5E:A7:29:E9:72:37:4D:F1:F2:10:F5:67:57:3D:3C:09:00'
+# 2026-09：原团队密钥不可得，重建新团队密钥（CN=OctaCode，RSA-2048，有效期至 2056）。
+# 注意：与旧证书无更新继承关系，旧包无法直接覆盖安装。
+TEAM_CERT_SHA256 = 'D7:8E:E5:03:83:36:C7:7B:92:88:CC:D0:D8:CF:A6:9D:DA:A7:2B:91:B0:2E:E1:22:BE:F3:3E:88:19:FD:7D:23'
 
 APKSIGNER_DIGEST_PATTERN = re.compile(r'certificate SHA-256 digest:\s*([0-9a-fA-F:]+)')
 KEYTOOL_DIGEST_PATTERN = re.compile(r'SHA256:\s*([0-9A-Fa-f:]+)')
