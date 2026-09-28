@@ -29,8 +29,14 @@ jobs:
     needs: [build-runners, build-rootfs]
     runs-on: ubuntu-latest
     env:
-      # 团队统一签名：密钥库与密码经 GitHub Secrets 注入（base64 编码的 dsh-mobile-team.jks）
+      # 团队统一签名：密码 +（四分片优先，单串兼容）经 GitHub Secrets 注入。
+      # DSH_KEYSTORE_B64_1..4 是密钥库 base64 按顺序切成的 4 个 851 字符分片；
+      # DSH_KEYSTORE_BASE64 是兼容旧方式的完整单串（3404 字符）。
       DSH_KEYSTORE_BASE64: ${{ secrets.DSH_KEYSTORE_BASE64 }}
+      DSH_KEYSTORE_B64_1: ${{ secrets.DSH_KEYSTORE_B64_1 }}
+      DSH_KEYSTORE_B64_2: ${{ secrets.DSH_KEYSTORE_B64_2 }}
+      DSH_KEYSTORE_B64_3: ${{ secrets.DSH_KEYSTORE_B64_3 }}
+      DSH_KEYSTORE_B64_4: ${{ secrets.DSH_KEYSTORE_B64_4 }}
       DSH_KEYSTORE_PASSWORD: ${{ secrets.DSH_KEYSTORE_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
@@ -43,8 +49,13 @@ jobs:
         # 注意：只判空，不打印值（GitHub 对 Secrets 自动脱敏，但这里连读都不读）。
         run: |
           missing=0
-          if [ -z "${DSH_KEYSTORE_BASE64:-}" ]; then
-            echo "::error::Missing secret DSH_KEYSTORE_BASE64 — repo Settings → Secrets and variables → Actions → New repository secret, name exactly DSH_KEYSTORE_BASE64"
+          chunks_ok=1
+          for i in 1 2 3 4; do
+            name="DSH_KEYSTORE_B64_$i"
+            if [ -z "${!name:-}" ]; then chunks_ok=0; fi
+          done
+          if [ -z "${DSH_KEYSTORE_BASE64:-}" ] && [ "$chunks_ok" = "0" ]; then
+            echo "::error::Missing signing secrets — provide either all four DSH_KEYSTORE_B64_1..4 (preferred) or the single DSH_KEYSTORE_BASE64 — repo Settings → Secrets and variables → Actions → New repository secret"
             missing=1
           fi
           if [ -z "${DSH_KEYSTORE_PASSWORD:-}" ]; then

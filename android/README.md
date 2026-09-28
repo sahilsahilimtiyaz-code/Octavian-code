@@ -16,7 +16,7 @@ The Gradle wrapper JAR and Capacitor-generated files are not committed. Generate
 所有构建变体（debug/release）统一使用团队共享密钥库 `dsh-mobile-team.jks` 签名，包名固定为 `com.octacode.agent`（`app/build.gradle` 的 `applicationId`）。这样任何开发者或 CI 产出的 APK 都可以互相覆盖安装，不会出现「应用签名与已安装版本不一致」的提示。密钥库与密码**严禁提交 Git**（`.gitignore` 已排除），按以下方式获取：
 
 1. **本地开发**：向团队负责人索取 `android/keystore/dsh-mobile-team.jks` 与 `android/keystore.properties`（模板见 `keystore.properties.example`），放入 `android/` 目录后即可直接构建。
-2. **CI 构建**：由 GitHub Secrets 注入环境变量 `DSH_KEYSTORE_BASE64`（密钥库文件的 base64 编码）与 `DSH_KEYSTORE_PASSWORD`，构建时自动解码使用。
+2. **CI 构建**：由 GitHub Secrets 注入 `DSH_KEYSTORE_PASSWORD`，外加以下二选一（**优先分片**）：`DSH_KEYSTORE_B64_1`…`DSH_KEYSTORE_B64_4`（密钥库 base64 按顺序切成的 4 个 851 字符分片，手机复制不易丢字符，坏了哪片 Gradle 会点名），或单个 `DSH_KEYSTORE_BASE64`（完整 3404 字符）。构建时自动拼接解码使用。
 3. **缺失即失败**：两者都缺失时 Gradle 配置阶段直接终止（fail-closed），防止有人用个人 debug 密钥产出签名不一致的 APK。
 
 签名一致性校验：`python3 scripts/verify-apk-signature.py --apk <apk 路径>`，比对 APK 签名证书的 SHA-256 指纹是否与团队证书一致（指纹固定于脚本内，CI 构建后自动执行）。团队成员可先用该脚本校验收到的 APK 再安装。
