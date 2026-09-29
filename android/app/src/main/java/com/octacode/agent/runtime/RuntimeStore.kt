@@ -55,6 +55,9 @@ class RuntimeStore(context: Context) {
     /** Host name map is generated alongside resolver configuration and bind-mounted into guest. */
     val hostsFile = File(appContext.filesDir, "runtime-hosts")
     val harnessPidFile = File(appContext.noBackupFilesDir, "dsh-harness.pid")
+    /** 引擎 pidfile：opencode / codex 各自认领，残留回收与 in-flight 去重只看它。 */
+    val agentEnginePidFile = File(appContext.noBackupFilesDir, "agent-engine.pid")
+    val codexEnginePidFile = File(appContext.noBackupFilesDir, "codex-engine.pid")
 
     /**
      * 应用自诊断日志。

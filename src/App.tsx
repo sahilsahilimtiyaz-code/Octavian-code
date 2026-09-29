@@ -382,7 +382,7 @@ const RUNTIME_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   INSTALL_IN_PROGRESS: '运行时安装正在进行。',
   INSTALL_CANCELLED: '运行时安装已取消，再次安装时可继续下载。',
   INSTALL_FAILED: '运行时安装失败，请稍后重试。',
-  RUNTIME_BUSY: '请先停止 Harness 和 Ubuntu 终端。',
+  RUNTIME_BUSY: '请先停止 Harness、终端与 Agent 服务。',
   RUNTIME_CORRUPTED: '运行时文件已损坏，请重置运行时后重新安装。',
   ROOTFS_LINKS_CORRUPTED: '运行时归档的关键符号链接缺失或损坏，请更换运行时来源后重新安装。',
   RUNNER_UNAVAILABLE: '此安装包不包含本机所需的运行组件，无法启动运行时。',

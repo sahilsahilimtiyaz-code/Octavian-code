@@ -7,7 +7,7 @@ import './PluginSettings.css'
 /** 原生侧在无法给出更精确信息时使用的通用文案：与它相同时不重复展示。 */
 const GENERIC_PLUGIN_FAILURE = '插件操作失败，请检查运行时状态后重试'
 
-const errorMessages: Record<string, string> = {  RUNTIME_BUSY: '请先停止 Harness 和 Ubuntu 终端',
+const errorMessages: Record<string, string> = {  RUNTIME_BUSY: '请先停止 Harness、终端与 Agent 服务',
   RUNTIME_NOT_INSTALLED: '请先安装 Ubuntu 运行时',
   PLUGIN_PROTECTED: '此核心组件受保护，随运行时更新',
   PLUGIN_UPDATE_FAILED: '插件更新失败，已保留原版本。请检查网络后重试。',
@@ -77,7 +77,7 @@ export function PluginSettings({ bridge, runtime, onBack }: { bridge: RuntimeBri
       </div>
     </div>
     <p className="plugin-description">{t('无需启动 Harness 即可管理插件：每个条目是一个插件包，展开后可调整其中的子插件。')}</p>
-    <div className="plugin-stop"><span>{t('修改插件前请先停止 Harness 和 Ubuntu 终端；改动在下次启动时生效。')}</span><button className="button button-danger-quiet compact-button" type="button" disabled={busy} onClick={() => { void stop() }}>{t('停止运行环境')}</button></div>
+    <div className="plugin-stop"><span>{t('修改插件前请先停止 Harness、终端与 Agent 服务；改动在下次启动时生效。')}</span><button className="button button-danger-quiet compact-button" type="button" disabled={busy} onClick={() => { void stop() }}>{t('停止运行环境')}</button></div>
     {notice && <p className="plugin-notice" role={failed ? 'alert' : 'status'}>{t(notice)}{noticeDetail !== '' && `（${noticeDetail}）`}</p>}
     {busy && <p role="status">{t('正在处理插件，请稍候')}</p>}
     {catalog?.plugins.length === 0 && <p>{t('暂无插件。安装运行环境后点击「刷新」。')}</p>}

@@ -650,6 +650,9 @@ class AgentEngineServer(private val store: RuntimeStore) {
     fun start(requestedPort: Int? = null): AgentEngineState = synchronized(lock) {
         if (process?.isAlive == true && isReachable(port)) return state()
         stopLocked()
+        // 先收上一次的尸：应用被杀时访客进程经常活着，不收就永远撞端口。
+        // 只认 cmdline 里确实是我们的 runner 的进程，误杀不了别人。
+        EngineResidual.reapPidFile(store.agentEnginePidFile, store.launchRunnerFile.absolutePath)
         // 启动硬链接由 EngineLaunchResolver 在解析时布好（和 Harness 同一入口），
         // 这里不再重复——之前只有 Harness 流程会创建，没开过 DeepSeek 的用户
         // 在这里报缺失，那正是上一个版本的根因。
@@ -669,7 +672,8 @@ class AgentEngineServer(private val store: RuntimeStore) {
         val targetPort = candidates.firstOrNull { isPortFree(it) }
             ?: throw RuntimeFailure(
                 "AGENT_ENGINE_PORT_BUSY",
-                "Agent 服务端口都被占用（${candidates.first()} 起连续 ${candidates.size} 个）：请关闭占用端口的应用后重试",
+                "Agent 服务端口都被占用（${candidates.first()} 起连续 ${candidates.size} 个）" +
+                    describePortHolders(candidates.first()) + "：请关闭占用端口的应用后重试",
             )
         if (!File(store.currentRoot, "usr/local/bin/opencode").isFile) {
             throw RuntimeFailure("AGENT_ENGINE_MISSING", "运行时未内置 opencode，请先安装运行时")
@@ -735,14 +739,21 @@ class AgentEngineServer(private val store: RuntimeStore) {
             stopLocked()
             throw failure
         }
+        // 认领成功才写 pidfile：下次启动先收尸，stop() 时清掉。
+        // 写不下也不阻断启动（端口回退仍能兜底），只降级残留回收。
+        EngineResidual.ownPid(started)?.let { EngineResidual.writePidFile(store.agentEnginePidFile, it) }
         return state()
     }
 
-    /** 停止服务；幂等，未运行也成功。 */
+    /** 停止服务；幂等，未运行也成功。收掉 pidfile，免得下次误认。 */
     fun stop(): AgentEngineState = synchronized(lock) {
         stopLocked()
+        EngineResidual.deletePidFile(store.agentEnginePidFile)
         return state()
     }
+
+    /** 轻量存活（无探针）：只给安装/切换门引用，判定本身仍以探针为准。 */
+    fun isAlive(): Boolean = synchronized(lock) { process?.isAlive == true }
 
     /**
      * 代发 HTTP：调用前必须已就绪（进程在位 + 端口可达），否则报停止态而不是超时。
@@ -855,6 +866,14 @@ class AgentEngineServer(private val store: RuntimeStore) {
         val file = store.runtimeSecretFile
         try {
             file.parentFile?.mkdirs()
+            // 穿链接写入是大忌：访客侧能把这个路径换成符号链接，
+            // TRUNCATE 会顺着链接写出去。先摘链接，再正常建文件。
+            if (Files.isSymbolicLink(file.toPath())) {
+                try {
+                    Os.remove(file.absolutePath)
+                } catch (_: ErrnoException) {
+                }
+            }
             Files.write(
                 file.toPath(),
                 RuntimeSecretPolicy.renderEnvironmentFile(mapOf(SERVER_PASSWORD_ENV to password)).toByteArray(Charsets.UTF_8),
@@ -902,11 +921,16 @@ class AgentEngineServer(private val store: RuntimeStore) {
 
     private fun waitForReady(targetPort: Int, logFile: File) {
         val deadline = System.currentTimeMillis() + START_TIMEOUT_MILLIS
+        var everReachable = false
         while (System.currentTimeMillis() < deadline) {
             // 先看端口：服务可能 daemonize（父进程退出、端口接管），
-            // 也可能在我们轮询间隙刚好起来——通了就是通了，直接认领。
-            if (isReachable(targetPort)) return
-            if (process?.isAlive != true) {
+            // 也可能在我们轮询间隙刚好起来——通了就进入“认领”环节。
+            if (isReachable(targetPort)) {
+                everReachable = true
+                // 认领：用本次启动的密码做一次认证探测。通过才是我们的服务；
+                // 通但认领不上就继续等（对方可能在启动中），到点再判。
+                if (verifyOwnServer(targetPort)) return
+            } else if (process?.isAlive != true) {
                 val tail = logTail(logFile)?.let { " 进程遗言：$it" } ?: ""
                 throw RuntimeFailure("AGENT_ENGINE_START_FAILED", "Agent 服务进程意外退出。$tail")
             }
@@ -917,8 +941,46 @@ class AgentEngineServer(private val store: RuntimeStore) {
                 throw RuntimeFailure("AGENT_ENGINE_START_FAILED", "Agent 服务启动被中断")
             }
         }
+        if (everReachable) {
+            throw RuntimeFailure(
+                "AGENT_ENGINE_UNEXPECTED_SERVER",
+                "端口 $targetPort 上有应答，但认证对不上本服务：可能有其它程序占着这个端口。" +
+                    "换个端口启动，或停掉占用程序后重试",
+            )
+        }
         val tail = logTail(logFile)?.let { " 进程遗言：$it" } ?: ""
         throw RuntimeFailure("AGENT_ENGINE_START_FAILED", "Agent 服务启动超时。$tail")
+    }
+
+    /**
+     * 认领探测：带本次密码敲两扇门。
+     *
+     * `/global/health` 2xx 即认领；没有就退回 `/`（认证通过即非 401）。
+     * 401 说明密码对不上——要么是别人的服务，要么本服务没读到密码，
+     * 无论哪种都不能认领。
+     */
+    private fun verifyOwnServer(targetPort: Int): Boolean {
+        val password = serverPassword ?: return false
+        val basic = Base64.getEncoder().encodeToString("opencode:$password".toByteArray(Charsets.UTF_8))
+        if (getAuthedCode(targetPort, "/global/health", basic)?.let { it in 200..299 } == true) return true
+        val root = getAuthedCode(targetPort, "/", basic) ?: return false
+        return root != 401
+    }
+
+    private fun getAuthedCode(targetPort: Int, path: String, basic: String): Int? {
+        var connection: HttpURLConnection? = null
+        return try {
+            connection = URL("http://127.0.0.1:$targetPort$path").openConnection() as HttpURLConnection
+            connection.connectTimeout = PROBE_TIMEOUT_MILLIS
+            connection.readTimeout = PROBE_TIMEOUT_MILLIS
+            connection.instanceFollowRedirects = false
+            connection.setRequestProperty("Authorization", "Basic $basic")
+            connection.responseCode
+        } catch (_: Throwable) {
+            null
+        } finally {
+            connection?.disconnect()
+        }
     }
 
     private fun isReachable(targetPort: Int): Boolean {
@@ -948,6 +1010,21 @@ class AgentEngineServer(private val store: RuntimeStore) {
         } catch (_: Throwable) {
             return false
         }
+    }
+
+    /** 点名占用者：残留的自己人还是外来程序，报错里写清楚。 */
+    private fun describePortHolders(port: Int): String {
+        val holders = try {
+            EngineResidual.findPortListeners(port)
+        } catch (_: Throwable) {
+            return ""
+        }
+        if (holders.isEmpty()) return ""
+        val names = holders.take(3).mapNotNull { pid ->
+            EngineResidual.describeHolder(pid, store.launchRunnerFile.absolutePath)
+        }
+        if (names.isEmpty()) return ""
+        return "，占用者：" + names.joinToString("、")
     }
 
     private fun newPassword(): String {

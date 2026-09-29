@@ -40,8 +40,8 @@ class MobileRuntimeController(
 
     fun install(source: RuntimeSource) = lifecycleLock.withLock {
         ensureOpen()
-        if (supervisor.isRunning() || terminals.hasRuntimeSessions()) {
-            throw RuntimeFailure("RUNTIME_BUSY", "请先停止 Harness 和 Ubuntu 终端")
+        if (supervisor.isRunning() || terminals.hasRuntimeSessions() || agentEngine.isAlive() || codexEngine.isAlive()) {
+            throw RuntimeFailure("RUNTIME_BUSY", "请先停止 Harness、终端与 Agent 服务")
         }
         // 判定必须在安装**之前**取：装完之后「本来有没有运行时」就无从分辨，
         // 而它决定通知说「已安装」还是「已更新」（见 TaskNotificationPolicy.forInstallCompleted）。
@@ -73,10 +73,10 @@ class MobileRuntimeController(
      */
     fun installAgentCli(name: String): List<RuntimeAgentInstaller.AgentCliState> = lifecycleLock.withLock {
         ensureOpen()
-        if (supervisor.isRunning() || terminals.hasRuntimeSessions()) {
-            throw RuntimeFailure("RUNTIME_BUSY", "请先停止 Harness 和 Ubuntu 终端")
+        if (supervisor.isRunning() || terminals.hasRuntimeSessions() || agentEngine.isAlive() || codexEngine.isAlive()) {
+            throw RuntimeFailure("RUNTIME_BUSY", "请先停止 Harness、终端与 Agent 服务")
         }
-        agentInstaller.install(name) { !supervisor.isRunning() && !terminals.hasRuntimeSessions() }
+        agentInstaller.install(name) { !supervisor.isRunning() && !terminals.hasRuntimeSessions() && !agentEngine.isAlive() && !codexEngine.isAlive() }
     }
 
     /**
@@ -312,8 +312,8 @@ class MobileRuntimeController(
     fun switchRuntimeVersion(target: String): List<RuntimeVersionInfo> = lifecycleLock.withLock {
         ensureOpen()
         RuntimeVersionPolicy.requireTarget(target)
-        if (supervisor.isRunning() || terminals.hasRuntimeSessions()) {
-            throw RuntimeFailure("RUNTIME_BUSY", "请先停止 Harness 和 Ubuntu 终端")
+        if (supervisor.isRunning() || terminals.hasRuntimeSessions() || agentEngine.isAlive() || codexEngine.isAlive()) {
+            throw RuntimeFailure("RUNTIME_BUSY", "请先停止 Harness、终端与 Agent 服务")
         }
         installer.switchToRetained()
         versions.list()
@@ -418,6 +418,8 @@ class MobileRuntimeController(
             BestEffortCleanup.runAll(
                 { supervisor.stop() },
                 { terminals.closeAllAndWait() },
+                { agentEngine.stop() },
+                { codexEngine.stop() },
             )
             status.refreshIdle()
         }
@@ -434,6 +436,8 @@ class MobileRuntimeController(
             BestEffortCleanup.runAll(
                 { supervisor.stop() },
                 { terminals.closeAllAndWait() },
+                { agentEngine.stop() },
+                { codexEngine.stop() },
             )
             installer.resetWorkspace()
             status.snapshot()
@@ -549,6 +553,8 @@ class MobileRuntimeController(
             BestEffortCleanup.runAll(
                 { supervisor.stop() },
                 { terminals.shutdown() },
+                { agentEngine.stop() },
+                { codexEngine.stop() },
             )
         }
     }

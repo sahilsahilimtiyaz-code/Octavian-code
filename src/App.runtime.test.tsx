@@ -641,14 +641,14 @@ describe('运行时版本管理', () => {
     bridge.startHarness.mockResolvedValue({ ...readyState })
     bridge.getState.mockResolvedValue({ ...readyState })
     bridge.getRuntimeVersions.mockResolvedValue(threeSlots)
-    bridge.switchRuntimeVersion.mockRejectedValue(new Error('请先停止 Harness 和 Ubuntu 终端'))
+    bridge.switchRuntimeVersion.mockRejectedValue(new Error('请先停止 Harness、终端与 Agent 服务'))
     render(<App />)
     await waitFor(() => expect(bridge.openHarness).toHaveBeenCalledTimes(1))
 
     await openSettingsPage('运行与后台')
     fireEvent.click(await screen.findByRole('button', { name: '切换到上一版本' }))
 
-    expect(await screen.findByText('请先停止 Harness 和 Ubuntu 终端')).toBeVisible()
+    expect(await screen.findByText('请先停止 Harness、终端与 Agent 服务')).toBeVisible()
     expect(screen.queryByText('已切换到上一版本')).toBeNull()
     // 失败不该把界面清空：原来的三槽仍然在，按钮还是可点的状态。
     expect(screen.getByText(/2026\.09\.01 · dsh 0\.1\.7-rc\.2/)).toBeVisible()

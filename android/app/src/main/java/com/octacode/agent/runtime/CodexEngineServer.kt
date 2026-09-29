@@ -51,6 +51,8 @@ class CodexEngineServer(private val store: RuntimeStore) {
     fun start(): CodexEngineState = synchronized(lock) {
         if (process?.isAlive == true) return state()
         stopLocked()
+        // 先收上一次的尸：stdio 服务没有端口可查，孤儿只能靠 pidfile 认。
+        EngineResidual.reapPidFile(store.codexEnginePidFile, store.launchRunnerFile.absolutePath)
         // 启动硬链接由 EngineLaunchResolver 在解析时布好，这里只做宿主侧速检。
         if (!File(store.currentRoot, "usr/local/bin/codex").isFile) {
             throw RuntimeFailure("AGENT_ENGINE_MISSING", "运行时未内置 codex，请先安装运行时")
@@ -70,6 +72,12 @@ class CodexEngineServer(private val store: RuntimeStore) {
         for (argv in attempts) {
             try {
                 startAttempt(argv)
+                val started = process
+                if (started != null) {
+                    EngineResidual.ownPid(started)?.let { pid ->
+                        EngineResidual.writePidFile(store.codexEnginePidFile, pid)
+                    }
+                }
                 return state()
             } catch (error: Throwable) {
                 lastError = error
@@ -162,8 +170,12 @@ class CodexEngineServer(private val store: RuntimeStore) {
     /** 停止服务；幂等。 */
     fun stop(): CodexEngineState = synchronized(lock) {
         stopLocked()
+        EngineResidual.deletePidFile(store.codexEnginePidFile)
         return state()
     }
+
+    /** 轻量存活（无探针）：只给安装/切换门引用，判定本身仍以握手为准。 */
+    fun isAlive(): Boolean = synchronized(lock) { process?.isAlive == true }
 
     private fun stopLocked() {
         val current = process
