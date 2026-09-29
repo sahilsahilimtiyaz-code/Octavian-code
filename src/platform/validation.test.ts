@@ -17,6 +17,7 @@ import {
   validateAgentEvent,
   validateAgentMessageId,
   validateAgentModelId,
+  validateAgentName,
   validateAgentServerPort,
   validateAgentSessionId,
   validateAgentVariant,
@@ -988,6 +989,9 @@ describe('Agent 聊天与附件校验', () => {
     expect(validateAgentVariant('max')).toBe('max')
     expect(() => validateAgentVariant('a b')).toThrow('模型档位无效')
     expect(() => validateAgentVariant('')).toThrow('模型档位无效')
+    expect(validateAgentName('build')).toBe('build')
+    expect(() => validateAgentName('a/b')).toThrow('代理名称无效')
+    expect(() => validateAgentName('')).toThrow('代理名称无效')
   })
 
   it('审批动作只认服务端枚举，问答答案只认选项标签数组', () => {

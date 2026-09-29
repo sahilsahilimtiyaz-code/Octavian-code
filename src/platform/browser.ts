@@ -4,6 +4,7 @@ import type {
   AgentChatJson,
   AgentEngineServerState,
   AgentModelCatalog,
+  AgentAgentCatalog,
   AttachmentContent,
   CodexEngineState,
   DiagnosticLogState,
@@ -378,6 +379,7 @@ export function createBrowserBridge(): RuntimeBridge {
     agentChatSend: (): Promise<AgentChatJson> =>
       Promise.reject(new Error('浏览器预览不支持本机 Agent 聊天')),
     agentModels: (): Promise<AgentModelCatalog> => Promise.resolve({ models: [] }),
+    agentAgents: (): Promise<AgentAgentCatalog> => Promise.resolve({ agents: [] }),
     agentChatAbort: (): Promise<AgentChatJson> =>
       Promise.reject(new Error('浏览器预览不支持本机 Agent 聊天')),
     agentChatFork: (): Promise<AgentChatJson> =>

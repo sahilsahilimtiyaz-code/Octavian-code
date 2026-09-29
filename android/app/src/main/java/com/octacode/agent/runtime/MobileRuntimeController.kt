@@ -127,11 +127,21 @@ class MobileRuntimeController(
         agentEngine.chatCreate(title.trim())
     }
 
-    fun agentChatCreateWithModel(title: String, modelID: String?, variant: String?): String =
+    fun agentChatCreateWithModel(title: String, modelID: String?, variant: String?, agent: String?): String =
         lifecycleLock.withLock {
             ensureOpen()
-            agentEngine.chatCreateWithModel(title.trim(), modelID?.trim().orEmpty().ifEmpty { null }, variant?.trim().orEmpty().ifEmpty { null })
+            agentEngine.chatCreateWithModel(
+                title.trim(),
+                modelID?.trim().orEmpty().ifEmpty { null },
+                variant?.trim().orEmpty().ifEmpty { null },
+                agent?.trim().orEmpty().ifEmpty { null },
+            )
         }
+
+    fun agentAgents(): String = lifecycleLock.withLock {
+        ensureOpen()
+        agentEngine.agentAgents()
+    }
 
     fun agentModels(): String = lifecycleLock.withLock {
         ensureOpen()

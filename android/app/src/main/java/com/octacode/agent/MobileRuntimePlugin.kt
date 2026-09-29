@@ -502,12 +502,27 @@ class MobileRuntimePlugin : Plugin() {
             val title = call.getString("title")?.trim().orEmpty()
             val model = call.getString("model")?.trim().orEmpty()
             val variant = call.getString("variant")?.trim().orEmpty()
-            if (model.isEmpty() && variant.isEmpty()) {
+            val agent = call.getString("agent")?.trim().orEmpty()
+            if (model.isEmpty() && variant.isEmpty() && agent.isEmpty()) {
                 JSObject().put("json", controller.agentChatCreate(title))
             } else {
-                // 模型/档位只在用户显式选择时才带：缺省走服务端默认，不替用户做决定。
-                JSObject().put("json", controller.agentChatCreateWithModel(title, model.ifEmpty { null }, variant.ifEmpty { null }))
+                // 模型/档位/代理只在用户显式选择时才带：缺省走服务端默认，不替用户做决定。
+                JSObject().put(
+                    "json",
+                    controller.agentChatCreateWithModel(title, model.ifEmpty { null }, variant.ifEmpty { null }, agent.ifEmpty { null }),
+                )
             }
+        }
+    }
+
+    /**
+     * 权限：应用内桥接。
+     * 代理目录：`GET /agent` 原文透传，解析在前端做。
+     */
+    @PluginMethod
+    fun agentAgents(call: PluginCall) {
+        execute(call) {
+            JSObject().put("json", controller.agentAgents())
         }
     }
 

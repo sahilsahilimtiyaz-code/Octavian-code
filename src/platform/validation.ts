@@ -628,6 +628,14 @@ export function validateAgentVariant(value: unknown): string {
   return value
 }
 
+/** 代理名：目录条目的 name 原样回传，同档位同一套字符集。 */
+export function validateAgentName(value: unknown): string {
+  if (typeof value !== 'string' || !AGENT_VARIANT_PATTERN.test(value)) {
+    throw new Error('代理名称无效')
+  }
+  return value
+}
+
 const AGENT_MESSAGE_ID_PATTERN = /^[A-Za-z0-9_.-]{1,128}$/
 const PERMISSION_REPLIES: readonly string[] = ['once', 'always', 'reject']
 const QUESTION_ANSWERS_MAX = 8

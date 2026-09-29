@@ -1,5 +1,5 @@
 import { validatePluginCatalog, validatePluginRequest } from './plugins'
-import { parseAgentModels, parseJsonPayload } from '../opencodeClient'
+import { parseAgentAgents, parseAgentModels, parseJsonPayload } from '../opencodeClient'
 import { Capacitor, registerPlugin } from '@capacitor/core'
 import type { PluginListenerHandle } from '@capacitor/core'
 import { createBrowserBridge } from './browser'
@@ -46,6 +46,7 @@ import {
   validateAgentEvent,
   validateAgentMessageId,
   validateAgentModelId,
+  validateAgentName,
   validateAgentServerPort,
   validateAgentSessionId,
   validateAgentVariant,
@@ -140,7 +141,7 @@ interface NativeRuntimePlugin {
   startAgentServer(options: { port?: number }): Promise<unknown>
   stopAgentServer(): Promise<unknown>
   agentChatSessions(): Promise<unknown>
-  agentChatCreate(options: { title: string; model?: string; variant?: string }): Promise<unknown>
+  agentChatCreate(options: { title: string; model?: string; variant?: string; agent?: string }): Promise<unknown>
   agentChatHistory(options: { sessionId: string }): Promise<unknown>
   agentSessionRename(options: { sessionId: string; title: string }): Promise<unknown>
   agentSessionDelete(options: { sessionId: string }): Promise<unknown>
@@ -151,6 +152,7 @@ interface NativeRuntimePlugin {
   stageAgentAttachment(options: { fileName: string; mime: string; dataBase64: string }): Promise<unknown>
   agentChatFile(options: { guestPath: string }): Promise<unknown>
   agentModels(): Promise<unknown>
+  agentAgents(): Promise<unknown>
   agentChatAbort(options: { sessionId: string }): Promise<unknown>
   agentChatFork(options: { sessionId: string; messageId: string }): Promise<unknown>
   agentPermissionReply(options: { sessionId: string; requestId: string; reply: string; message?: string }): Promise<unknown>
@@ -306,11 +308,12 @@ function createNativeBridge(): RuntimeBridge {
     stopAgentServer: () => NativeRuntime.stopAgentServer().then(validateAgentEngineServerState),
     // Agent 聊天中继：id/标题/正文形态前端先拦，原生侧代发 HTTP 后原文返回。
     agentChatSessions: () => NativeRuntime.agentChatSessions().then(validateAgentChatJson),
-    agentChatCreate: (title, modelID, variant) => NativeRuntime
+    agentChatCreate: (title, modelID, variant, agent) => NativeRuntime
       .agentChatCreate({
         title: validateAgentChatTitle(title),
         ...(modelID === undefined ? {} : { model: validateAgentModelId(modelID) }),
         ...(variant === undefined ? {} : { variant: validateAgentVariant(variant) }),
+        ...(agent === undefined ? {} : { agent: validateAgentName(agent) }),
       })
       .then(validateAgentChatJson),
     agentChatHistory: sessionId => NativeRuntime
@@ -350,6 +353,10 @@ function createNativeBridge(): RuntimeBridge {
     // 模型目录：原文经 8MB 上限后归一化，不含密钥与地址。
     agentModels: () => NativeRuntime.agentModels().then(value => ({
       models: parseAgentModels(parseJsonPayload(validateAgentChatJson(value).json)),
+    })),
+    // 代理目录：同上，name/description/mode 归一化。
+    agentAgents: () => NativeRuntime.agentAgents().then(value => ({
+      agents: parseAgentAgents(parseJsonPayload(validateAgentChatJson(value).json)),
     })),
     // 中止与分叉：id 形态前端先拦，原生侧代发后原文返回。
     agentChatAbort: sessionId => NativeRuntime

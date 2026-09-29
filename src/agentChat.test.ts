@@ -65,6 +65,14 @@ describe('createNativeAgentChat', () => {
     })
   })
 
+  it('代理目录透传', async () => {
+    const bridge = stubBridge({
+      agentAgents: () => Promise.resolve({ agents: [{ id: 'build', name: 'build', description: '' }] }),
+    })
+    const chat = createNativeAgentChat(bridge)
+    await expect(chat.listAgents()).resolves.toEqual([{ id: 'build', name: 'build', description: '' }])
+  })
+
   it('默认审批策略透传模式', async () => {
     const bridge = stubBridge({
       agentPermissionDefaults: () => Promise.resolve({ mode: 'strict' }),

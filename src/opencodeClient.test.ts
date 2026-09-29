@@ -3,6 +3,7 @@ import {
   extractUsage,
   normalizeMessage,
   OpenCodeClient,
+  parseAgentAgents,
   parseAgentModels,
   parsePermissionFeed,
   parseQuestionList,
@@ -211,6 +212,24 @@ describe('OpenCodeClient', () => {
       model: 'anthropic/claude-sonnet-4-6',
       variant: 'max',
     })
+  })
+
+  it('createSession 按需带上 agent，parseAgentAgents 归一化目录', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(jsonResponse({ id: 's9', title: 't' })))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new OpenCodeClient('http://127.0.0.1:4097', { username: 'opencode', password: 'pw' })
+    await client.createSession('t', undefined, undefined, 'build')
+    const [, created] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(JSON.parse(created.body as string)).toEqual({ title: 't', agent: 'build' })
+    expect(
+      parseAgentAgents([
+        { name: 'build', description: '构建', mode: 'primary' },
+        { description: '无名' },
+        null,
+      ]),
+    ).toEqual([{ id: 'build', name: 'build', description: '构建' }])
+    expect(parseAgentAgents({})).toEqual([])
+    expect(parseAgentAgents(null)).toEqual([])
   })
 
   it('listModels 走 /config/providers 并归一化', async () => {

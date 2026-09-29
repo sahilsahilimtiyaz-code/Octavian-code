@@ -7,7 +7,7 @@
  */
 
 import type { AgentChatPart, AgentModelOption } from './platform/types'
-import type { AgentPermissionRequest, AgentQuestionRequest, PermissionReply } from './platform/types'
+import type { AgentAgentOption, AgentPermissionRequest, AgentQuestionRequest, PermissionReply } from './platform/types'
 
 export interface OpenCodeSession {
   id: string
@@ -273,6 +273,27 @@ export function parseAgentModels(value: unknown): AgentModelOption[] {
   return models
 }
 
+/**
+ * 代理目录归一化：`GET /agent`，条目含 name/description（mode 仅展示参考）。
+ * 数组与单对象都接受；无 name 的条目跳过（没名字选不了）。
+ */
+export function parseAgentAgents(value: unknown): AgentAgentOption[] {
+  const list = Array.isArray(value) ? value : [value]
+  const agents: AgentAgentOption[] = []
+  for (const entry of list) {
+    let item: Record<string, unknown>
+    try {
+      item = asRecord(entry, '代理')
+    } catch {
+      continue
+    }
+    const id = asString(item.name)
+    if (id === '') continue
+    agents.push({ id, name: id, description: asString(item.description) })
+  }
+  return agents
+}
+
 /** 消息列表归一化：纯函数，直连与中继共用；非法条目跳过不断流。 */
 export function parseMessageList(value: unknown): ChatMessage[] {
   if (!Array.isArray(value)) throw new Error('消息列表格式无效')
@@ -430,12 +451,13 @@ export class OpenCodeClient {
     return parseSessionList(await this.request('/session'))
   }
 
-  async createSession(title?: string, modelID?: string, variant?: string): Promise<OpenCodeSession> {
+  async createSession(title?: string, modelID?: string, variant?: string, agent?: string): Promise<OpenCodeSession> {
     const body: Record<string, string> = {}
     if (title !== undefined) body.title = title
-    // model/variant 与服务端 SDK 的 create body 键一致；未知键服务端按 JSON 惯例忽略。
+    // model/variant/agent 与服务端 SDK 的 create body 键一致；未知键服务端按 JSON 惯例忽略。
     if (modelID !== undefined) body.model = modelID
     if (variant !== undefined) body.variant = variant
+    if (agent !== undefined) body.agent = agent
     const value = asRecord(
       await this.request('/session', {
         method: 'POST',
@@ -450,6 +472,14 @@ export class OpenCodeClient {
 
   async listModels(): Promise<AgentModelOption[]> {
     return parseAgentModels(await this.request('/config/providers'))
+  }
+
+  /**
+   * 代理目录归一化：`GET /agent`，条目含 name/description/mode。
+   * 数组与 map 两种写法都接受（与模型目录同一套容忍）。
+   */
+  async listAgents(): Promise<AgentAgentOption[]> {
+    return parseAgentAgents(await this.request('/agent'))
   }
 
   async abortSession(sessionId: string): Promise<void> {

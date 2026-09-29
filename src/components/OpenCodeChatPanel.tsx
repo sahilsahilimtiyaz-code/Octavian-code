@@ -24,9 +24,11 @@ import {
   formatTokens,
   guessAttachmentMime,
   pollUntilSettled,
+  readDefaultAgent,
   readDefaultModelId,
   readDefaultVariant,
   sanitizeAttachmentName,
+  saveDefaultAgent,
   saveDefaultModelId,
   saveDefaultVariant,
   sumUsage,
@@ -36,6 +38,7 @@ import { t } from '../i18n'
 import type { ChatAttachment, ChatMessage, OpenCodeSession } from '../opencodeClient'
 import type {
   AgentChatPart,
+  AgentAgentOption,
   AgentEngineServerState,
   AgentEvent,
   AgentModelOption,
@@ -147,6 +150,8 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
   const [policyBusy, setPolicyBusy] = useState(false)
   const [selectedModel, setSelectedModel] = useState<string>(() => readDefaultModelId())
   const [selectedVariant, setSelectedVariant] = useState<string>(() => readDefaultVariant())
+  const [agents, setAgents] = useState<AgentAgentOption[]>([])
+  const [selectedAgent, setSelectedAgent] = useState<string>(() => readDefaultAgent())
   const [sessionModels, setSessionModels] = useState<Record<string, string>>({})
   const [permissions, setPermissions] = useState<AgentPermissionRequest[]>([])
   const [questions, setQuestions] = useState<AgentQuestionRequest[]>([])
@@ -238,12 +243,22 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
     )
   }, [transport])
 
+  const refreshAgents = useCallback(() => {
+    void transport.listAgents().then(
+      value => {
+        if (!cancelled.current) setAgents(value)
+      },
+      () => undefined,
+    )
+  }, [transport])
+
   useEffect(() => {
     if (server?.running === true) {
       refreshModels()
       refreshPolicy()
+      refreshAgents()
     }
-  }, [server?.running, refreshModels, refreshPolicy])
+  }, [server?.running, refreshModels, refreshPolicy, refreshAgents])
 
   const setPolicyMode = (mode: 'ask' | 'lenient' | 'strict') => {
     setPolicyBusy(true)
@@ -280,6 +295,14 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
   const pickVariant = (variant: string) => {
     setSelectedVariant(variant)
     saveDefaultVariant(variant)
+  }
+
+  // 当前选中的代理：目录里找不到就按没选处理（密钥没配/代理下线时）。
+  const effectiveAgent = agents.some(option => option.id === selectedAgent) ? selectedAgent : ''
+
+  const pickAgent = (id: string) => {
+    setSelectedAgent(id)
+    saveDefaultAgent(id)
   }
 
   const refreshMessages = useCallback(
@@ -544,13 +567,15 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
     const title = `${t('新会话')} ${new Date().toLocaleString()}`
     const model = selectedOption?.id
     const variant = model !== undefined && effectiveVariant !== '' ? effectiveVariant : undefined
-    void transport.createSession(title, model, variant).then(
+    const agent = effectiveAgent === '' ? undefined : effectiveAgent
+    void transport.createSession(title, model, variant, agent).then(
       session => {
         if (cancelled.current) return
         setCreating(false)
         setSessions(previous => [session, ...previous])
-        if (model !== undefined) {
-          const label = variant !== undefined ? `${model} · ${variant}` : model
+        const labelParts = [model, variant, agent].filter((part): part is string => part !== undefined && part !== '')
+        if (labelParts.length > 0) {
+          const label = labelParts.join(' · ')
           setSessionModels(previous => ({ ...previous, [session.id]: label }))
         }
         setActiveId(session.id)
@@ -898,6 +923,22 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
               <option value="">{t('默认档位')}</option>
               {variantOptions.map(variant => (
                 <option key={variant} value={variant}>{variant}</option>
+              ))}
+            </select>
+          )}
+          {agents.length > 0 && (
+            <select
+              className="chat-select"
+              value={effectiveAgent}
+              onChange={event => pickAgent(event.target.value)}
+              aria-label={t('执行代理')}
+              title={t('新会话的默认执行代理；不选则用服务端默认')}
+            >
+              <option value="">{t('默认代理')}</option>
+              {agents.map(option => (
+                <option key={option.id} value={option.id} title={option.description}>
+                  {option.name}
+                </option>
               ))}
             </select>
           )}

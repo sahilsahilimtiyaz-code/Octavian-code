@@ -12,6 +12,7 @@ import { CodexClient } from './codexClient'
 import type { CodexMessage, CodexModelOption, CodexThread } from './codexClient'
 import type {
   AgentChatPart,
+  AgentAgentOption,
   AgentEvent,
   AgentModelOption,
   AgentPermissionRequest,
@@ -33,7 +34,7 @@ import {
 
 export interface AgentChatTransport {
   listSessions: () => Promise<OpenCodeSession[]>
-  createSession: (title: string, modelID?: string, variant?: string) => Promise<OpenCodeSession>
+  createSession: (title: string, modelID?: string, variant?: string, agent?: string) => Promise<OpenCodeSession>
   renameSession: (sessionId: string, title: string) => Promise<void>
   deleteSession: (sessionId: string) => Promise<void>
   deleteMessage: (sessionId: string, messageId: string) => Promise<void>
@@ -44,6 +45,7 @@ export interface AgentChatTransport {
   stageAttachment: (fileName: string, mime: string, dataBase64: string) => Promise<StagedAttachment>
   readAttachment: (guestPath: string) => Promise<AttachmentContent>
   listModels: () => Promise<AgentModelOption[]>
+  listAgents: () => Promise<AgentAgentOption[]>
   abortSession: (sessionId: string) => Promise<void>
   forkSession: (sessionId: string, messageId: string) => Promise<OpenCodeSession>
   replyPermission: (sessionId: string, requestId: string, reply: PermissionReply, message?: string) => Promise<void>
@@ -58,8 +60,9 @@ export function createNativeAgentChat(bridge: RuntimeBridge): AgentChatTransport
   return {
     listSessions: () =>
       bridge.agentChatSessions().then(payload => parseSessionList(parseJsonPayload(payload.json))),
-    createSession: (title, modelID, variant) =>
-      bridge.agentChatCreate(title, modelID, variant).then(payload => parseSession(parseJsonPayload(payload.json))),
+    createSession: (title, modelID, variant, agent) =>
+      bridge.agentChatCreate(title, modelID, variant, agent).then(payload => parseSession(parseJsonPayload(payload.json))),
+    listAgents: () => bridge.agentAgents().then(catalog => catalog.agents),
     renameSession: (sessionId, title) => bridge.agentSessionRename(sessionId, title).then(() => undefined),
     deleteSession: sessionId => bridge.agentSessionDelete(sessionId).then(() => undefined),
     deleteMessage: (sessionId, messageId) => bridge.agentMessageDelete(sessionId, messageId).then(() => undefined),
@@ -258,6 +261,7 @@ export function sanitizeAttachmentName(fileName: string): string {
 
 export const DEFAULT_MODEL_STORAGE_KEY = 'octacode-model-v1'
 export const DEFAULT_VARIANT_STORAGE_KEY = 'octacode-variant-v1'
+export const DEFAULT_AGENT_STORAGE_KEY = 'octacode-agent-v1'
 
 /** 默认模型（`provider/model` 全称）：非法值回退为空（= 服务端默认）。 */
 export function readDefaultModelId(): string {
@@ -297,6 +301,28 @@ export function saveDefaultVariant(variant: string): void {
       window.localStorage.removeItem(DEFAULT_VARIANT_STORAGE_KEY)
     } else {
       window.localStorage.setItem(DEFAULT_VARIANT_STORAGE_KEY, variant)
+    }
+  } catch {
+    // 存不下就用本次会话的值，界面不为此报错。
+  }
+}
+
+/** 默认代理：目录里找不到就按没选处理，新会话走服务端默认。 */
+export function readDefaultAgent(): string {
+  try {
+    const value = window.localStorage.getItem(DEFAULT_AGENT_STORAGE_KEY)
+    return typeof value === 'string' ? value : ''
+  } catch {
+    return ''
+  }
+}
+
+export function saveDefaultAgent(agent: string): void {
+  try {
+    if (agent === '') {
+      window.localStorage.removeItem(DEFAULT_AGENT_STORAGE_KEY)
+    } else {
+      window.localStorage.setItem(DEFAULT_AGENT_STORAGE_KEY, agent)
     }
   } catch {
     // 存不下就用本次会话的值，界面不为此报错。

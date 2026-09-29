@@ -137,6 +137,20 @@ export interface AgentModelCatalog {
   models: AgentModelOption[]
 }
 
+/**
+ * Agent 代理目录：`GET /agent` 归一化，只含展示与选择所需字段。
+ * 建会话时当 agent 带上（服务端 create body 的确认键）。
+ */
+export interface AgentAgentOption {
+  id: string
+  name: string
+  description: string
+}
+
+export interface AgentAgentCatalog {
+  agents: AgentAgentOption[]
+}
+
 /** 权限审批动作：直达服务端 PermissionV2.Reply 枚举，不翻译不合并。 */
 export type PermissionReply = 'once' | 'always' | 'reject'
 
@@ -769,7 +783,7 @@ export interface RuntimeBridge {
    * 会话 id 形态、标题与正文长度前后两端各拦一道；返回原文 JSON。
    */
   agentChatSessions: () => Promise<AgentChatJson>
-  agentChatCreate: (title: string, modelID?: string, variant?: string) => Promise<AgentChatJson>
+  agentChatCreate: (title: string, modelID?: string, variant?: string, agent?: string) => Promise<AgentChatJson>
   agentChatHistory: (sessionId: string) => Promise<AgentChatJson>
   agentSessionRename: (sessionId: string, title: string) => Promise<AgentChatJson>
   agentSessionDelete: (sessionId: string) => Promise<AgentChatJson>
@@ -789,6 +803,8 @@ export interface RuntimeBridge {
   agentChatFile: (guestPath: string) => Promise<AttachmentContent>
   /** 模型目录：全局 providers → models 归一化，不含密钥与地址。 */
   agentModels: () => Promise<AgentModelCatalog>
+  /** 代理目录：name/description/mode 归一化。 */
+  agentAgents: () => Promise<AgentAgentCatalog>
   /** 中止本轮运行；返回服务端原文（布尔）。 */
   agentChatAbort: (sessionId: string) => Promise<AgentChatJson>
   /** 从某条消息分叉新会话；返回新会话原文。 */

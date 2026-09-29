@@ -217,14 +217,14 @@ class AgentEngineServer(private val store: RuntimeStore) {
     }
 
     /**
-     * 带模型的新会话：`POST /session {title, model?, variant?}`。
+     * 带模型的新会话：`POST /session {title, model?, variant?, agent?}`。
      *
      * model 形态为 `provider/model`（与 `opencode run -m` 同一写法）；
-     * variant 是模型的 effort 档位，只在目录声明了它时才传。
-     * 未知字段服务端按 JSON 惯例忽略——因此 variant 即使在某版本不生效，
-     * 最坏情况也只是回到该模型的默认档位，不会建不出会话。
+     * variant 是模型的 effort 档位，只在目录声明了它时才传；
+     * agent 是 `GET /agent` 目录里的代理名，新会话用它当默认执行者。
+     * 未知字段服务端按 JSON 惯例忽略——最坏情况也只是回到默认，不会建不出会话。
      */
-    fun chatCreateWithModel(title: String, modelID: String?, variant: String?): String = synchronized(lock) {
+    fun chatCreateWithModel(title: String, modelID: String?, variant: String?, agent: String?): String = synchronized(lock) {
         if (title.isEmpty() || title.length > 120) {
             throw RuntimeFailure("SETTINGS_INVALID", "会话标题无效")
         }
@@ -245,9 +245,24 @@ class AgentEngineServer(private val store: RuntimeStore) {
                 append(",\"variant\":")
                 append(jsonQuote(variant))
             }
+            if (!agent.isNullOrEmpty()) {
+                if (!AGENT_NAME_PATTERN.matches(agent)) {
+                    throw RuntimeFailure("SETTINGS_INVALID", "代理名称无效")
+                }
+                append(",\"agent\":")
+                append(jsonQuote(agent))
+            }
             append('}')
         }
         return relay("POST", "/session", body)
+    }
+
+    /**
+     * 代理目录：`GET /agent` 原文透传，解析在 TypeScript 侧做。
+     * 条目含 name/description/mode，选择后在建会话时当 agent 带上。
+     */
+    fun agentAgents(): String = synchronized(lock) {
+        return relay("GET", "/agent", null)
     }
 
     fun chatHistory(sessionId: String): String = synchronized(lock) {
@@ -892,6 +907,8 @@ class AgentEngineServer(private val store: RuntimeStore) {
         private val MODEL_ID_ALNUM = Regex("[A-Za-z0-9]")
         /** effort 档位名：TUI 侧如 `default`，只收紧字符集。 */
         private val VARIANT_PATTERN = Regex("^[A-Za-z0-9_.-]{1,64}$")
+        /** 代理名：目录条目的 name 原样回传，同档位同一套字符集。 */
+        private val AGENT_NAME_PATTERN = Regex("^[A-Za-z0-9_.-]{1,64}$")
         private val ATTACHMENT_NAME_PATTERN = Regex("^[A-Za-z0-9._-]{1,64}$")
         /** v1 附件类型：图片 + PDF + 纯文本。压缩包/可执行文件不接受。 */
         private val ATTACHMENT_MIME_TYPES = setOf(
