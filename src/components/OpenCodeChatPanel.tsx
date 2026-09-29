@@ -26,6 +26,7 @@ import {
   saveDefaultModelId,
   saveDefaultVariant,
 } from '../agentChat'
+import { renderMarkdown } from '../markdown'
 import { t } from '../i18n'
 import type { ChatAttachment, ChatMessage, OpenCodeSession } from '../opencodeClient'
 import type {
@@ -838,7 +839,11 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
                       ))}
                     </details>
                   )}
-                  {message.text === '' && message.attachments.length === 0 ? t('(空消息)') : message.text}
+                  {message.text === '' && message.attachments.length === 0 ? (
+                    t('(空消息)')
+                  ) : (
+                    <span dangerouslySetInnerHTML={{ __html: renderMarkdown(message.text) }} />
+                  )}
                   {message.attachments.length > 0 && (
                     <span className="chat-attachments">
                       {message.attachments.map(attachment => (

@@ -1973,6 +1973,72 @@ button:disabled {
   object-fit: contain;
 }
 
+/* 聊天消息里的 Markdown：只管排版，不管颜色体系（跟随气泡变量）。 */
+.chat-bubble p {
+  margin: 0 0 8px;
+}
+
+.chat-bubble p:last-child {
+  margin-bottom: 0;
+}
+
+.chat-bubble h4 {
+  margin: 10px 0 6px;
+  font-size: 0.875rem;
+}
+
+.chat-bubble pre {
+  margin: 8px 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  border-radius: var(--radius-inner);
+  background: var(--terminal-bg);
+  color: var(--terminal-chip-text);
+  font-size: 0.75rem;
+  line-height: 1.6;
+}
+
+.chat-bubble pre code {
+  padding: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.chat-bubble code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface-muted);
+  font-size: 0.8125em;
+}
+
+.chat-bubble ul,
+.chat-bubble ol {
+  margin: 6px 0 8px;
+  padding-left: 20px;
+}
+
+.chat-bubble li {
+  margin: 2px 0;
+}
+
+.chat-bubble a {
+  color: var(--blue);
+  word-break: break-all;
+}
+
+.chat-bubble blockquote {
+  margin: 8px 0;
+  padding: 4px 0 4px 12px;
+  border-left: 3px solid var(--line-strong);
+  color: var(--muted);
+}
+
+.chat-bubble hr {
+  margin: 10px 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
 .spin {
   animation: spin 900ms linear infinite;
 }

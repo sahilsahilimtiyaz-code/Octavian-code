@@ -4,6 +4,7 @@ import {
   createCodexChat,
   pollCodexUntilSettled,
 } from '../agentChat'
+import { renderMarkdown } from '../markdown'
 import { t } from '../i18n'
 import type { CodexModelOption, CodexThread } from '../codexClient'
 import type { ChatMessage } from '../opencodeClient'
@@ -419,7 +420,11 @@ export function CodexChatPanel({ bridge, installed, onInstall }: CodexChatPanelP
                       ))}
                     </details>
                   )}
-                  {message.text === '' ? t('(空消息)') : message.text}
+                  {message.text === '' ? (
+                    t('(空消息)')
+                  ) : (
+                    <span dangerouslySetInnerHTML={{ __html: renderMarkdown(message.text) }} />
+                  )}
                   {(message.tools ?? []).length > 0 && (
                     <span className="chat-attachments">
                       {(message.tools ?? []).map(tool => (
