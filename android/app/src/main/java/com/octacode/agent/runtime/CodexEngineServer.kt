@@ -87,7 +87,9 @@ class CodexEngineServer(private val store: RuntimeStore) {
         val argv = RuntimeCommand.prootArgv(
             store,
             guestArgv,
-            bindMounts = RuntimeMailbox(store).bindMounts(),
+            // /dev+/proc 是地基绑定；seccomp 关掉走默认直通（与 opencode 侧同理）。
+            bindMounts = listOf(ProotBindMount("/dev"), ProotBindMount("/proc")) +
+                RuntimeMailbox(store).bindMounts(),
         )
         val logFile = File(store.harnessPidFile.parentFile, "codex-app-server.log")
         logFile.parentFile?.mkdirs()
@@ -99,7 +101,7 @@ class CodexEngineServer(private val store: RuntimeStore) {
                 .redirectError(ProcessBuilder.Redirect.appendTo(logFile))
                 .also { builder ->
                     builder.environment().clear()
-                    builder.environment().putAll(RuntimeCommand.hostEnvironment(store.hostContext, store))
+                    builder.environment().putAll(RuntimeCommand.hostEnvironment(store.hostContext, store, true))
                 }
                 .start()
         } catch (error: Throwable) {

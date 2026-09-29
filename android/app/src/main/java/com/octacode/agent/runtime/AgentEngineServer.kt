@@ -697,10 +697,15 @@ class AgentEngineServer(private val store: RuntimeStore) {
         val delivery = RuntimeSecretPolicy.delivery(mapOf(SERVER_PASSWORD_ENV to password), 0)
         // 投递区绑定一起带进访客：附件落点（/mnt/inbox）对 opencode 可见，无需新挂载点。
         // 不可访问时返回空列表（已有语义），服务照常启动，只是附件功能不可用。
+        // /dev 与 /proc 是 PRoot 会话的地基（没有它们连随机数都没有，Bun 这类
+        // 运行时启动即崩溃）；seccomp 在 5.15 内核 + 自带 Ubuntu 用户态下只会
+        // 挡掉 JSC JIT 与新 glibc 的 syscall（如 clone3），关掉走默认直通。
+        val binds = listOf(ProotBindMount("/dev"), ProotBindMount("/proc")) +
+            RuntimeMailbox(store).bindMounts()
         val argv = RuntimeCommand.prootArgv(
             store,
             entrypoint,
-            bindMounts = RuntimeMailbox(store).bindMounts(),
+            bindMounts = binds,
             secrets = delivery,
         )
         val logFile = File(store.harnessPidFile.parentFile, "opencode-serve.log")
@@ -717,7 +722,7 @@ class AgentEngineServer(private val store: RuntimeStore) {
                 .redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
                 .also { builder ->
                     builder.environment().clear()
-                    builder.environment().putAll(RuntimeCommand.hostEnvironment(store.hostContext, store))
+                    builder.environment().putAll(RuntimeCommand.hostEnvironment(store.hostContext, store, true))
                 }
                 .start()
         } catch (error: Throwable) {
