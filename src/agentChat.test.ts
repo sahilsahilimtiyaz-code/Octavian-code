@@ -65,6 +65,16 @@ describe('createNativeAgentChat', () => {
     })
   })
 
+  it('默认审批策略透传模式', async () => {
+    const bridge = stubBridge({
+      agentPermissionDefaults: () => Promise.resolve({ mode: 'strict' }),
+      agentPermissionDefaultsSet: () => Promise.resolve({ mode: 'lenient' }),
+    })
+    const chat = createNativeAgentChat(bridge)
+    await expect(chat.permissionDefaults()).resolves.toBe('strict')
+    await expect(chat.permissionDefaultsSet('lenient')).resolves.toBe('lenient')
+  })
+
   it('消息删除透传', async () => {
     const calls: Array<[string, string]> = []
     const bridge = stubBridge({

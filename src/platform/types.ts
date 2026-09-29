@@ -140,6 +140,13 @@ export interface AgentModelCatalog {
 /** 权限审批动作：直达服务端 PermissionV2.Reply 枚举，不翻译不合并。 */
 export type PermissionReply = 'once' | 'always' | 'reject'
 
+/** 默认审批策略：ask 缺省询问；lenient/strict 是 verbatim 见过的原子组合；custom 只展示。 */
+export type PermissionDefaultsMode = 'ask' | 'lenient' | 'strict' | 'custom'
+
+export interface PermissionDefaults {
+  mode: PermissionDefaultsMode
+}
+
 /** 待批权限：id/sessionID/action/resources/shape 按服务端原样透出展示。 */
 export interface AgentPermissionRequest {
   id: string
@@ -767,6 +774,9 @@ export interface RuntimeBridge {
   agentSessionRename: (sessionId: string, title: string) => Promise<AgentChatJson>
   agentSessionDelete: (sessionId: string) => Promise<AgentChatJson>
   agentMessageDelete: (sessionId: string, messageId: string) => Promise<AgentChatJson>
+  /** 默认审批策略三档（ask/lenient/strict/custom），读写访客 opencode.json。 */
+  agentPermissionDefaults: () => Promise<PermissionDefaults>
+  agentPermissionDefaultsSet: (mode: PermissionDefaultsMode) => Promise<PermissionDefaults>
   agentChatSend: (sessionId: string, text: string, parts?: AgentChatPart[]) => Promise<AgentChatJson>
   /**
    * 附件落点：base64 写进 `inbox/attachments`，返回访客路径。

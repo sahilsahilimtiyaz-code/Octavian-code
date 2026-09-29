@@ -555,6 +555,26 @@ class MobileRuntimePlugin : Plugin() {
         }
     }
 
+    /**
+     * 权限：应用内桥接。
+     * 默认审批策略三档（ask/lenient/strict/custom）：读访客 opencode.json，
+     * 只写 verbatim 见过的原子组合；文件损坏绝不覆盖。
+     */
+    @PluginMethod
+    fun agentPermissionDefaults(call: PluginCall) {
+        execute(call) {
+            JSObject().put("json", controller.agentPermissionDefaults())
+        }
+    }
+
+    @PluginMethod
+    fun agentPermissionDefaultsSet(call: PluginCall) {
+        execute(call) {
+            val mode = call.getString("mode")?.trim().orEmpty()
+            JSObject().put("json", controller.agentPermissionDefaultsSet(mode))
+        }
+    }
+
     @PluginMethod
     fun agentChatSend(call: PluginCall) {
         execute(call) {

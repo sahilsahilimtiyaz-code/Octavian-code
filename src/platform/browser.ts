@@ -14,6 +14,7 @@ import type {
   MailboxState,
   ModelProviderId,
   OverlayBallState,
+  PermissionDefaults,
   ProviderApiKeys,
   RuntimeBridge,
   RuntimeProgress,
@@ -370,6 +371,9 @@ export function createBrowserBridge(): RuntimeBridge {
     agentSessionDelete: (): Promise<AgentChatJson> =>
       Promise.reject(new Error('浏览器预览不支持本机 Agent 聊天')),
     agentMessageDelete: (): Promise<AgentChatJson> =>
+      Promise.reject(new Error('浏览器预览不支持本机 Agent 聊天')),
+    agentPermissionDefaults: (): Promise<PermissionDefaults> => Promise.resolve({ mode: 'ask' }),
+    agentPermissionDefaultsSet: (): Promise<PermissionDefaults> =>
       Promise.reject(new Error('浏览器预览不支持本机 Agent 聊天')),
     agentChatSend: (): Promise<AgentChatJson> =>
       Promise.reject(new Error('浏览器预览不支持本机 Agent 聊天')),

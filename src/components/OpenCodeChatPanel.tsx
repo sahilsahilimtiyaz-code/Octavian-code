@@ -41,6 +41,7 @@ import type {
   AgentModelOption,
   AgentPermissionRequest,
   AgentQuestionRequest,
+  PermissionDefaultsMode,
   RuntimeBridge,
 } from '../platform/types'
 import { validateAttachmentMime } from '../platform/validation'
@@ -141,6 +142,9 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
   const [thumbFailed, setThumbFailed] = useState<Record<string, boolean>>({})
   const [models, setModels] = useState<AgentModelOption[]>([])
   const [modelsError, setModelsError] = useState<string | null>(null)
+  const [modelsRefreshing, setModelsRefreshing] = useState(false)
+  const [policy, setPolicy] = useState<PermissionDefaultsMode>('ask')
+  const [policyBusy, setPolicyBusy] = useState(false)
   const [selectedModel, setSelectedModel] = useState<string>(() => readDefaultModelId())
   const [selectedVariant, setSelectedVariant] = useState<string>(() => readDefaultVariant())
   const [sessionModels, setSessionModels] = useState<Record<string, string>>({})
@@ -215,17 +219,47 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
       value => {
         if (cancelled.current) return
         setModels(value)
+        setModelsRefreshing(false)
       },
       error => {
         if (cancelled.current) return
+        setModelsRefreshing(false)
         setModelsError(errorMessage(error))
       },
     )
   }, [transport])
 
+  const refreshPolicy = useCallback(() => {
+    void transport.permissionDefaults().then(
+      mode => {
+        if (!cancelled.current) setPolicy(mode)
+      },
+      () => undefined,
+    )
+  }, [transport])
+
   useEffect(() => {
-    if (server?.running === true) refreshModels()
-  }, [server?.running, refreshModels])
+    if (server?.running === true) {
+      refreshModels()
+      refreshPolicy()
+    }
+  }, [server?.running, refreshModels, refreshPolicy])
+
+  const setPolicyMode = (mode: 'ask' | 'lenient' | 'strict') => {
+    setPolicyBusy(true)
+    void transport.permissionDefaultsSet(mode).then(
+      next => {
+        if (cancelled.current) return
+        setPolicyBusy(false)
+        setPolicy(next)
+      },
+      error => {
+        if (cancelled.current) return
+        setPolicyBusy(false)
+        setChatError(errorMessage(error))
+      },
+    )
+  }
 
   // 当前选中的模型条目：目录里找不到（密钥没配/模型下线）就按未选择处理，
   // 新会话走服务端默认，而不是拿一个不存在的 id 去建会话。
@@ -867,7 +901,57 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
               ))}
             </select>
           )}
+          <button
+            className="icon-button chat-row-button"
+            type="button"
+            onClick={() => {
+              setModelsRefreshing(true)
+              refreshModels()
+            }}
+            disabled={modelsRefreshing}
+            title={t('刷新模型目录')}
+            aria-label={t('刷新模型目录')}
+          >
+            {modelsRefreshing ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
+          </button>
           {modelsError !== null && <span className="settings-note">{modelsError}</span>}
+        </section>
+      )}
+
+      {server?.running === true && (
+        <section className="chat-modelbar" aria-label={t('审批策略')}>
+          <span className="settings-note">{t('默认审批')}</span>
+          <div className="segmented" role="tablist" aria-label={t('默认审批策略')}>
+            {(
+              [
+                ['ask', t('每次询问')],
+                ['lenient', t('宽松')],
+                ['strict', t('严格')],
+              ] as const
+            ).map(([mode, label]) => (
+              <button
+                key={mode}
+                type="button"
+                role="tab"
+                aria-selected={policy === mode}
+                className={policy === mode ? 'active' : ''}
+                disabled={policyBusy}
+                onClick={() => setPolicyMode(mode)}
+                title={
+                  mode === 'ask'
+                    ? t('缺省：每条敏感操作都弹窗确认')
+                    : mode === 'lenient'
+                      ? t('编辑与常用命令默认放行，保存后重启服务生效')
+                      : t('编辑与命令默认拒绝，保存后重启服务生效')
+                }
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {policy === 'custom' && (
+            <span className="settings-note">{t('终端手写过其它规则：选一档即覆盖。')}</span>
+          )}
         </section>
       )}
 

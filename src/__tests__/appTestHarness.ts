@@ -102,6 +102,8 @@ export const bridge = {
   agentSessionRename: vi.fn(),
   agentSessionDelete: vi.fn(),
   agentMessageDelete: vi.fn(),
+  agentPermissionDefaults: vi.fn(),
+  agentPermissionDefaultsSet: vi.fn(),
   agentChatSend: vi.fn(),
   stageAgentAttachment: vi.fn(),
   agentChatFile: vi.fn(),
@@ -338,6 +340,8 @@ export function beforeEachAppTest(): void {
   bridge.agentSessionRename.mockResolvedValue({ json: '{"id":"s1","title":"t"}' })
   bridge.agentSessionDelete.mockResolvedValue({ json: 'true' })
   bridge.agentMessageDelete.mockResolvedValue({ json: 'true' })
+  bridge.agentPermissionDefaults.mockResolvedValue({ mode: 'ask' })
+  bridge.agentPermissionDefaultsSet.mockResolvedValue({ mode: 'ask' })
   bridge.agentChatSend.mockResolvedValue({ json: 'null' })
   bridge.stageAgentAttachment.mockResolvedValue({ path: '/mnt/inbox/attachments/0-test.png' })
   bridge.agentChatFile.mockResolvedValue({ mime: 'image/png', dataBase64: 'iVBORw0KGgo=' })

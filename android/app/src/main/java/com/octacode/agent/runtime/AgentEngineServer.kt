@@ -12,6 +12,7 @@ import java.nio.file.StandardOpenOption
 import java.security.SecureRandom
 import java.util.Base64
 import java.util.concurrent.TimeUnit
+import org.json.JSONObject
 
 /**
  * 本机 Agent 服务（`opencode serve`）的启动、探活与停止。
@@ -287,6 +288,84 @@ class AgentEngineServer(private val store: RuntimeStore) {
             "/session/" + requireSessionId(sessionId) + "/message/" + messageId,
             null,
         )
+    }
+
+    /**
+     * 默认审批策略：读写访客 `~/.config/opencode/opencode.json` 顶层 `permission` 段。
+     *
+     * 三档都只用二进制里 verbatim 出现过的原子组合：
+     * - ask：缺省（删掉托管键，走服务端默认的逐条询问）；
+     * - lenient：`{"edit":"allow","bash":{"*":"allow"}}`；
+     * - strict：`{"edit":"deny","bash":"deny"}`。
+     * 其它形态一律报 `custom`（只展示不改写；选任一档即覆盖）。
+     * 文件损坏（JSON 解析失败）直接抛错，绝不覆盖用户的手写配置。
+     * 改完重启 Agent 服务生效（配置是启动时读的）。
+     */
+    fun permissionDefaults(): String = synchronized(lock) {
+        val config = readAgentConfig()
+            ?: return "{\"mode\":\"ask\"}"
+        val permission = try {
+            config.optJSONObject(CONFIG_PERMISSION_KEY)
+        } catch (_: Throwable) {
+            throw RuntimeFailure("RUNTIME_CONFIG_FAILED", "Agent 配置文件损坏，请手动检查")
+        }
+        if (permission == null) return "{\"mode\":\"ask\"}"
+        val mode = when {
+            permission.length() == 0 -> "ask"
+            jsonMatches(permission, LENIENT_PERMISSION_JSON) -> "lenient"
+            jsonMatches(permission, STRICT_PERMISSION_JSON) -> "strict"
+            else -> "custom"
+        }
+        return "{\"mode\":" + jsonQuote(mode) + "}"
+    }
+
+    fun permissionDefaultsSet(mode: String): String = synchronized(lock) {
+        if (mode != "ask" && mode != "lenient" && mode != "strict") {
+            throw RuntimeFailure("SETTINGS_INVALID", "审批策略无效")
+        }
+        val file = agentConfigFile()
+        val config = try {
+            if (file.isFile) JSONObject(file.readText(Charsets.UTF_8)) else JSONObject()
+        } catch (_: Throwable) {
+            throw RuntimeFailure("RUNTIME_CONFIG_FAILED", "Agent 配置文件损坏，请手动检查")
+        }
+        try {
+            when (mode) {
+                "ask" -> config.remove(CONFIG_PERMISSION_KEY)
+                "lenient" -> config.put(CONFIG_PERMISSION_KEY, JSONObject(LENIENT_PERMISSION_JSON))
+                else -> config.put(CONFIG_PERMISSION_KEY, JSONObject(STRICT_PERMISSION_JSON))
+            }
+        } catch (_: Throwable) {
+            throw RuntimeFailure("RUNTIME_CONFIG_FAILED", "审批策略写入失败")
+        }
+        try {
+            file.parentFile?.mkdirs()
+            file.writeText(config.toString(2), Charsets.UTF_8)
+        } catch (_: Throwable) {
+            throw RuntimeFailure("RUNTIME_CONFIG_FAILED", "Agent 配置文件写入失败")
+        }
+        return "{\"mode\":" + jsonQuote(mode) + "}"
+    }
+
+    private fun agentConfigFile(): File =
+        File(store.currentRoot, "root/.config/opencode/opencode.json")
+
+    private fun readAgentConfig(): JSONObject? {
+        val file = agentConfigFile()
+        if (!file.isFile) return null
+        return try {
+            JSONObject(file.readText(Charsets.UTF_8))
+        } catch (_: Throwable) {
+            throw RuntimeFailure("RUNTIME_CONFIG_FAILED", "Agent 配置文件损坏，请手动检查")
+        }
+    }
+
+    private fun jsonMatches(actual: JSONObject, expectedJson: String): Boolean {
+        return try {
+            actual.similar(JSONObject(expectedJson))
+        } catch (_: Throwable) {
+            false
+        }
     }
 
     /**
@@ -786,6 +865,12 @@ class AgentEngineServer(private val store: RuntimeStore) {
         const val DEFAULT_PORT = 4097
         /** 自动选端口的上界：4097 起连续 8 个，体面够用又不至于扫半个端口表。 */
         const val LAST_FALLBACK_PORT = 4104
+        /** 访客 opencode.json 里的审批段键名。 */
+        const val CONFIG_PERMISSION_KEY = "permission"
+        /** 宽松档：edit 放行、bash 全放行（键、值、形态都 verbatim 见过）。 */
+        const val LENIENT_PERMISSION_JSON = "{\"edit\":\"allow\",\"bash\":{\"*\":\"allow\"}}"
+        /** 严格档：edit 与 bash 都拒绝（同上）。 */
+        const val STRICT_PERMISSION_JSON = "{\"edit\":\"deny\",\"bash\":\"deny\"}"
         const val SERVER_PASSWORD_ENV = "OPENCODE_SERVER_PASSWORD"
         private const val PASSWORD_BYTES = 32
         private const val START_TIMEOUT_MILLIS = 60_000L

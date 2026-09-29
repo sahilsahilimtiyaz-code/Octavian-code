@@ -158,6 +158,20 @@ class MobileRuntimeController(
         agentEngine.messageDelete(sessionId, messageId)
     }
 
+    /**
+     * 默认审批策略：读/写访客 opencode.json 的 permission 段。
+     * 三档之外一律报 custom，只展示不改写。
+     */
+    fun agentPermissionDefaults(): String = lifecycleLock.withLock {
+        ensureOpen()
+        agentEngine.permissionDefaults()
+    }
+
+    fun agentPermissionDefaultsSet(mode: String): String = lifecycleLock.withLock {
+        ensureOpen()
+        agentEngine.permissionDefaultsSet(mode)
+    }
+
     fun agentChatSend(sessionId: String, text: String): String = lifecycleLock.withLock {
         ensureOpen()
         agentEngine.chatSend(sessionId, text)

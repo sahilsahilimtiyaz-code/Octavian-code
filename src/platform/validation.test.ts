@@ -25,6 +25,8 @@ import {
   validateAttachmentFileName,
   validateAttachmentGuestPath,
   validateAttachmentMime,
+  validatePermissionDefaults,
+  validatePermissionDefaultsMode,
   validatePermissionReply,
   validateQuestionAnswers,
   validateStagedAttachment,
@@ -999,6 +1001,15 @@ describe('Agent 聊天与附件校验', () => {
     for (const bad of [[], [''], [1], new Array(9).fill('x')]) {
       expect(() => validateQuestionAnswers(bad), JSON.stringify(bad)).toThrow('问答选项无效')
     }
+  })
+
+  it('默认审批策略读写形态', () => {
+    expect(validatePermissionDefaults({ mode: 'ask' })).toEqual({ mode: 'ask' })
+    expect(validatePermissionDefaults({ mode: 'custom' })).toEqual({ mode: 'custom' })
+    expect(() => validatePermissionDefaults({ mode: 'nope' })).toThrow('默认审批策略格式无效')
+    expect(validatePermissionDefaultsMode('lenient')).toBe('lenient')
+    expect(() => validatePermissionDefaultsMode('custom')).toThrow('审批策略无效')
+    expect(() => validatePermissionDefaultsMode('')).toThrow('审批策略无效')
   })
 
   it('消息标识与事件块形态', () => {

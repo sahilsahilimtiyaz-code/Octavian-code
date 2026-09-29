@@ -58,6 +58,8 @@ import {
   validateCodexEvent,
   validateCodexMethod,
   validateCodexParams,
+  validatePermissionDefaults,
+  validatePermissionDefaultsMode,
   validatePermissionReply,
   validateQuestionAnswers,
   validateStagedAttachment,
@@ -143,6 +145,8 @@ interface NativeRuntimePlugin {
   agentSessionRename(options: { sessionId: string; title: string }): Promise<unknown>
   agentSessionDelete(options: { sessionId: string }): Promise<unknown>
   agentMessageDelete(options: { sessionId: string; messageId: string }): Promise<unknown>
+  agentPermissionDefaults(): Promise<unknown>
+  agentPermissionDefaultsSet(options: { mode: string }): Promise<unknown>
   agentChatSend(options: { sessionId: string; text?: string; parts?: unknown }): Promise<unknown>
   stageAgentAttachment(options: { fileName: string; mime: string; dataBase64: string }): Promise<unknown>
   agentChatFile(options: { guestPath: string }): Promise<unknown>
@@ -321,6 +325,10 @@ function createNativeBridge(): RuntimeBridge {
     agentMessageDelete: (sessionId, messageId) => NativeRuntime
       .agentMessageDelete({ sessionId: validateAgentSessionId(sessionId), messageId: validateAgentMessageId(messageId) })
       .then(validateAgentChatJson),
+    agentPermissionDefaults: () => NativeRuntime.agentPermissionDefaults().then(validatePermissionDefaults),
+    agentPermissionDefaultsSet: mode => NativeRuntime
+      .agentPermissionDefaultsSet({ mode: validatePermissionDefaultsMode(mode) })
+      .then(validatePermissionDefaults),
     agentChatSend: (sessionId, text, parts) => NativeRuntime
       .agentChatSend({
         sessionId: validateAgentSessionId(sessionId),

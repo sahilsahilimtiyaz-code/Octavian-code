@@ -36,6 +36,8 @@ import type {
   AttachmentContent,
   CodexEngineState,
   CodexEvent,
+  PermissionDefaults,
+  PermissionDefaultsMode,
   PermissionReply,
   StagedAttachment,
   ShizukuState,
@@ -645,6 +647,24 @@ export function validatePermissionReply(value: unknown): PermissionReply {
     throw new Error('审批动作无效')
   }
   return value as PermissionReply
+}
+
+const PERMISSION_DEFAULTS_MODES: readonly string[] = ['ask', 'lenient', 'strict', 'custom']
+
+/** 默认审批策略：读路径接受 custom（只展示），写路径只接受前三档。 */
+export function validatePermissionDefaults(value: unknown): PermissionDefaults {
+  const record = asRecord(value, '默认审批策略')
+  if (typeof record.mode !== 'string' || !PERMISSION_DEFAULTS_MODES.includes(record.mode)) {
+    throw new Error('默认审批策略格式无效')
+  }
+  return { mode: record.mode as PermissionDefaultsMode }
+}
+
+export function validatePermissionDefaultsMode(value: unknown): 'ask' | 'lenient' | 'strict' {
+  if (value !== 'ask' && value !== 'lenient' && value !== 'strict') {
+    throw new Error('审批策略无效')
+  }
+  return value
 }
 
 /** 问答答案：选中的选项标签数组，1–8 个。 */

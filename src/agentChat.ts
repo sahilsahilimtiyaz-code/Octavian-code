@@ -18,6 +18,7 @@ import type {
   AgentQuestionRequest,
   AttachmentContent,
   CodexEvent,
+  PermissionDefaultsMode,
   PermissionReply,
   StagedAttachment,
 } from './platform/types'
@@ -36,6 +37,8 @@ export interface AgentChatTransport {
   renameSession: (sessionId: string, title: string) => Promise<void>
   deleteSession: (sessionId: string) => Promise<void>
   deleteMessage: (sessionId: string, messageId: string) => Promise<void>
+  permissionDefaults: () => Promise<PermissionDefaultsMode>
+  permissionDefaultsSet: (mode: 'ask' | 'lenient' | 'strict') => Promise<PermissionDefaultsMode>
   listMessages: (sessionId: string) => Promise<ChatMessage[]>
   sendMessage: (sessionId: string, text: string, parts?: AgentChatPart[]) => Promise<void>
   stageAttachment: (fileName: string, mime: string, dataBase64: string) => Promise<StagedAttachment>
@@ -60,6 +63,8 @@ export function createNativeAgentChat(bridge: RuntimeBridge): AgentChatTransport
     renameSession: (sessionId, title) => bridge.agentSessionRename(sessionId, title).then(() => undefined),
     deleteSession: sessionId => bridge.agentSessionDelete(sessionId).then(() => undefined),
     deleteMessage: (sessionId, messageId) => bridge.agentMessageDelete(sessionId, messageId).then(() => undefined),
+    permissionDefaults: () => bridge.agentPermissionDefaults().then(defaults => defaults.mode),
+    permissionDefaultsSet: mode => bridge.agentPermissionDefaultsSet(mode).then(defaults => defaults.mode),
     listMessages: sessionId =>
       bridge.agentChatHistory(sessionId).then(payload => parseMessageList(parseJsonPayload(payload.json))),
     sendMessage: (sessionId, text, parts) =>
