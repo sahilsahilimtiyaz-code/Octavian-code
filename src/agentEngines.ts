@@ -10,8 +10,8 @@
 
 export type EngineId = 'deepseek' | 'opencode' | 'claude' | 'codex' | 'gemini' | 'antigravity'
 
-/** 引擎的接入方式：harness 是既有 DeepSeek 通道；opencode-serve 是本机 SSE 服务；pty 是终端 fallback。 */
-export type EngineTransport = 'harness' | 'opencode-serve' | 'pty'
+/** 引擎的接入方式：harness 是既有 DeepSeek 通道；serve 系是本机服务；pty 是终端 fallback。 */
+export type EngineTransport = 'harness' | 'opencode-serve' | 'codex-server' | 'pty'
 
 export type EngineStatus = 'stable' | 'beta'
 
@@ -56,8 +56,8 @@ export const AGENT_ENGINES: readonly AgentEngine[] = [
   {
     id: 'codex',
     name: 'Codex',
-    tagline: 'OpenAI 官方 CLI · 终端会话',
-    transport: 'pty',
+    tagline: 'OpenAI 官方 CLI · 本机 app-server 会话',
+    transport: 'codex-server',
     status: 'beta',
     cliCommand: 'codex',
   },

@@ -23,6 +23,8 @@ export interface ChatMessage {
   attachments: ChatAttachment[]
   /** 思考过程分段：可折叠展示，不参与正文拼接。 */
   reasoning: string[]
+  /** 工具调用摘要（Codex 侧有，OpenCode 侧暂无）：展示用。 */
+  tools?: string[]
 }
 
 /** 消息里的文件/图片引用：mime 与落点 url 原样透出，渲染时再决议。 */

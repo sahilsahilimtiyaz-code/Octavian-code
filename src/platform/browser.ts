@@ -5,6 +5,7 @@ import type {
   AgentEngineServerState,
   AgentModelCatalog,
   AttachmentContent,
+  CodexEngineState,
   DiagnosticLogState,
   DiagnosticLogText,
   HarnessLog,
@@ -384,6 +385,17 @@ export function createBrowserBridge(): RuntimeBridge {
     stopAgentEventStream: (): Promise<void> => Promise.resolve(),
     addAgentEventListener: (): Promise<ListenerHandle> =>
       Promise.reject(new Error('浏览器预览不支持 Agent 事件流')),
+    codexEngineState: (): Promise<CodexEngineState> => Promise.resolve({ running: false }),
+    startCodexServer: (): Promise<CodexEngineState> =>
+      Promise.reject(new Error('浏览器预览不支持 Codex 服务')),
+    stopCodexServer: (): Promise<CodexEngineState> => Promise.resolve({ running: false }),
+    codexRpc: (): Promise<AgentChatJson> =>
+      Promise.reject(new Error('浏览器预览不支持 Codex 服务')),
+    startCodexEventStream: (): Promise<void> =>
+      Promise.reject(new Error('浏览器预览不支持 Codex 服务')),
+    stopCodexEventStream: (): Promise<void> => Promise.resolve(),
+    addCodexEventListener: (): Promise<ListenerHandle> =>
+      Promise.reject(new Error('浏览器预览不支持 Codex 服务')),
     stageAgentAttachment: (): Promise<StagedAttachment> =>
       Promise.reject(new Error('浏览器预览不支持附件落点')),
     agentChatFile: (): Promise<AttachmentContent> => Promise.reject(new Error('浏览器预览不支持附件读取')),

@@ -113,6 +113,13 @@ export const bridge = {
   startAgentEventStream: vi.fn(),
   stopAgentEventStream: vi.fn(),
   addAgentEventListener: vi.fn(),
+  codexEngineState: vi.fn(),
+  startCodexServer: vi.fn(),
+  stopCodexServer: vi.fn(),
+  codexRpc: vi.fn(),
+  startCodexEventStream: vi.fn(),
+  stopCodexEventStream: vi.fn(),
+  addCodexEventListener: vi.fn(),
   managePlugins: vi.fn(),
   getDiagnosticLogState: vi.fn(),
   readDiagnosticLog: vi.fn(),
@@ -339,6 +346,13 @@ export function beforeEachAppTest(): void {
   bridge.startAgentEventStream.mockResolvedValue(undefined)
   bridge.stopAgentEventStream.mockResolvedValue(undefined)
   bridge.addAgentEventListener.mockResolvedValue({ remove: vi.fn().mockResolvedValue(undefined) })
+  bridge.codexEngineState.mockResolvedValue({ running: false })
+  bridge.startCodexServer.mockResolvedValue({ running: true })
+  bridge.stopCodexServer.mockResolvedValue({ running: false })
+  bridge.codexRpc.mockResolvedValue({ json: 'null' })
+  bridge.startCodexEventStream.mockResolvedValue(undefined)
+  bridge.stopCodexEventStream.mockResolvedValue(undefined)
+  bridge.addCodexEventListener.mockResolvedValue({ remove: vi.fn().mockResolvedValue(undefined) })
   bridge.managePlugins.mockResolvedValue({ plugins: [] })
   bridge.getDiagnosticLogState.mockResolvedValue({ ...diagnostic })
   bridge.readDiagnosticLog.mockResolvedValue({

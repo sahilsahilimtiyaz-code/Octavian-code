@@ -698,6 +698,59 @@ class MobileRuntimePlugin : Plugin() {
         }
     }
 
+    /**
+     * 权限：应用内桥接。
+     * Codex 服务：一组与 opencode 侧对称的透传。stdio 私有通道无端口密码，
+     * 方法名走原生侧白名单，params 原样透传、大小封顶。
+     */
+    @PluginMethod
+    fun codexEngineState(call: PluginCall) {
+        resolveWhileActive(call) {
+            JSObject().put("running", controller.codexEngineState().running)
+        }
+    }
+
+    @PluginMethod
+    fun startCodexServer(call: PluginCall) {
+        execute(call) {
+            JSObject().put("running", controller.startCodexServer().running)
+        }
+    }
+
+    @PluginMethod
+    fun stopCodexServer(call: PluginCall) {
+        execute(call) {
+            JSObject().put("running", controller.stopCodexServer().running)
+        }
+    }
+
+    @PluginMethod
+    fun codexRpc(call: PluginCall) {
+        execute(call) {
+            val method = call.getString("method")?.trim().orEmpty()
+            val params = call.getString("params")
+            JSObject().put("json", controller.codexRpc(method, params))
+        }
+    }
+
+    @PluginMethod
+    fun startCodexEventStream(call: PluginCall) {
+        execute(call) {
+            controller.startCodexEventStream { json ->
+                notifyListeners("codexEvent", JSObject().put("json", json))
+            }
+            JSObject()
+        }
+    }
+
+    @PluginMethod
+    fun stopCodexEventStream(call: PluginCall) {
+        execute(call) {
+            controller.stopCodexEventStream()
+            JSObject()
+        }
+    }
+
     @PluginMethod
     fun getSettings(call: PluginCall) {
         resolveWhileActive(call) { controller.store.settings().toJs() }

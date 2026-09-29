@@ -9,6 +9,7 @@ import type {
   AppThemeMode,
   PluginRequest,
   PluginCatalog,
+  CodexEvent,
   DeviceCommand,
   DeviceCommandResult,
   DiagnosticLogExport,
@@ -53,6 +54,10 @@ import {
   validateAttachmentFileName,
   validateAttachmentGuestPath,
   validateAttachmentMime,
+  validateCodexEngineState,
+  validateCodexEvent,
+  validateCodexMethod,
+  validateCodexParams,
   validatePermissionReply,
   validateQuestionAnswers,
   validateStagedAttachment,
@@ -148,6 +153,12 @@ interface NativeRuntimePlugin {
   agentPermissionFeed(): Promise<unknown>
   startAgentEventStream(): Promise<void>
   stopAgentEventStream(): Promise<void>
+  codexEngineState(): Promise<{ running: boolean }>
+  startCodexServer(): Promise<{ running: boolean }>
+  stopCodexServer(): Promise<{ running: boolean }>
+  codexRpc(options: { method: string; params?: string }): Promise<unknown>
+  startCodexEventStream(): Promise<void>
+  stopCodexEventStream(): Promise<void>
   getDiagnosticLogState(): Promise<DiagnosticLogState>
   readDiagnosticLog(options: { maxBytes?: number }): Promise<unknown>
   setDiagnosticLogSettings(options: { enabled: boolean; retentionDays: number }): Promise<DiagnosticLogState>
@@ -162,6 +173,7 @@ interface NativeRuntimePlugin {
   addListener(eventName: 'terminalOutput', listener: (event: TerminalChunk) => void): Promise<PluginListenerHandle>
   addListener(eventName: 'terminalExit', listener: (event: TerminalExit) => void): Promise<PluginListenerHandle>
   addListener(eventName: 'agentEvent', listener: (event: AgentEvent) => void): Promise<PluginListenerHandle>
+  addListener(eventName: 'codexEvent', listener: (event: CodexEvent) => void): Promise<PluginListenerHandle>
 }
 
 const MAX_TERMINAL_INPUT_BYTES = 256 * 1024
@@ -356,6 +368,16 @@ function createNativeBridge(): RuntimeBridge {
     startAgentEventStream: () => NativeRuntime.startAgentEventStream(),
     stopAgentEventStream: () => NativeRuntime.stopAgentEventStream(),
     addAgentEventListener: listener => NativeRuntime.addListener('agentEvent', validatedListener(validateAgentEvent, listener)),
+    // Codex 服务：stdio 私有通道无端口密码；方法名白名单 + params 序列化后过桥。
+    codexEngineState: () => NativeRuntime.codexEngineState().then(validateCodexEngineState),
+    startCodexServer: () => NativeRuntime.startCodexServer().then(validateCodexEngineState),
+    stopCodexServer: () => NativeRuntime.stopCodexServer().then(validateCodexEngineState),
+    codexRpc: (method, params) => NativeRuntime
+      .codexRpc({ method: validateCodexMethod(method), ...(params === undefined ? {} : { params: validateCodexParams(params) }) })
+      .then(validateAgentChatJson),
+    startCodexEventStream: () => NativeRuntime.startCodexEventStream(),
+    stopCodexEventStream: () => NativeRuntime.stopCodexEventStream(),
+    addCodexEventListener: listener => NativeRuntime.addListener('codexEvent', validatedListener(validateCodexEvent, listener)),
     readDiagnosticLog: options => NativeRuntime.readDiagnosticLog({ maxBytes: options?.maxBytes }).then(validateDiagnosticLogText),
     getDiagnosticLogState: () => NativeRuntime.getDiagnosticLogState().then(validateDiagnosticLogState),
     setDiagnosticLogSettings: (enabled, retentionDays) => {

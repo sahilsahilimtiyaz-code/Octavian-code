@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createNativeAgentChat, pollUntilSettled } from './agentChat'
+import { createCodexChat, createNativeAgentChat, pollUntilSettled } from './agentChat'
 import { guessAttachmentMime, sanitizeAttachmentName } from './agentChat'
 import { parseMessageList, parseSession, parseSessionList } from './opencodeClient'
 import type { ChatMessage } from './opencodeClient'
@@ -156,5 +156,31 @@ describe('pollUntilSettled', () => {
     )
     const result = await pollUntilSettled(listMessages, { intervalMs: 1, maxRounds: 3 })
     expect(result).toHaveLength(1)
+  })
+})
+
+describe('createCodexChat', () => {
+  it('透传 codexRpc 并归一化线程与消息', async () => {
+    const bridge = stubBridge({
+      codexRpc: (method: string) => {
+        if (method === 'thread/list') return Promise.resolve({ json: '[{"id":"thr_1","title":"t"}]' })
+        if (method === 'thread/read') {
+          return Promise.resolve({
+            json: '[{"id":"m1","role":"assistant","items":[{"type":"agentMessage","text":"hi"}]}]',
+          })
+        }
+        return Promise.resolve({ json: 'null' })
+      },
+      startCodexEventStream: () => Promise.resolve(undefined),
+      stopCodexEventStream: () => Promise.resolve(undefined),
+      addCodexEventListener: () => Promise.resolve({ remove: () => Promise.resolve(undefined) }),
+    })
+    const chat = createCodexChat(bridge)
+    await expect(chat.listThreads()).resolves.toEqual([{ id: 'thr_1', title: 't' }])
+    await expect(chat.readThread('thr_1')).resolves.toEqual([
+      { id: 'm1', role: 'assistant', text: 'hi', attachments: [], reasoning: [], tools: [] },
+    ])
+    const stop = await chat.subscribeEvents(() => undefined)
+    stop()
   })
 })

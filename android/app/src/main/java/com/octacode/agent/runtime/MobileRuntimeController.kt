@@ -29,6 +29,8 @@ class MobileRuntimeController(
     private val supervisor = RuntimeSupervisor(context, store, status)
     /** 本机 Agent 服务（opencode serve）：与 Harness 独立的进程与端口。 */
     private val agentEngine = AgentEngineServer(store)
+    /** 本机 Codex 服务（`codex app-server` stdio）：无密码，与谁都不冲突，可并行。 */
+    private val codexEngine = CodexEngineServer(store)
     private val plugins = RuntimePluginManager(context, store)
     /** 自检实例与 store、生命周期锁同源：插件侧不自行构造 RuntimeStore。 */
     private val selfCheck = RuntimeSelfCheck(context, store)
@@ -199,6 +201,42 @@ class MobileRuntimeController(
     fun stopAgentEventStream(): Unit = lifecycleLock.withLock {
         ensureOpen()
         agentEngine.stopEventStream()
+    }
+
+    /**
+     * 本机 Codex 服务：一组透传 + 事件流，形态与 opencode 侧对称。
+     *
+     * codex 用 stdio 私有通道，没有端口与密码，因此不需要 Harness 空闲：
+     * 它与 Harness、opencode 服务都可以同时跑。
+     */
+    fun codexEngineState(): CodexEngineState = lifecycleLock.withLock {
+        ensureOpen()
+        codexEngine.state()
+    }
+
+    fun startCodexServer(): CodexEngineState = lifecycleLock.withLock {
+        ensureOpen()
+        codexEngine.start()
+    }
+
+    fun stopCodexServer(): CodexEngineState = lifecycleLock.withLock {
+        ensureOpen()
+        codexEngine.stop()
+    }
+
+    fun codexRpc(method: String, paramsJson: String?): String = lifecycleLock.withLock {
+        ensureOpen()
+        codexEngine.rpc(method, paramsJson)
+    }
+
+    fun startCodexEventStream(listener: (String) -> Unit): Unit = lifecycleLock.withLock {
+        ensureOpen()
+        codexEngine.startEventStream(listener)
+    }
+
+    fun stopCodexEventStream(): Unit = lifecycleLock.withLock {
+        ensureOpen()
+        codexEngine.stopEventStream()
     }
 
     /**

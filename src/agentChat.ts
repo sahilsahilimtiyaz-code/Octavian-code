@@ -8,6 +8,8 @@
  */
 import type { RuntimeBridge } from './platform/types'
 import type { ChatMessage, OpenCodeSession } from './opencodeClient'
+import { CodexClient } from './codexClient'
+import type { CodexMessage, CodexModelOption, CodexThread } from './codexClient'
 import type {
   AgentChatPart,
   AgentEvent,
@@ -15,6 +17,7 @@ import type {
   AgentPermissionRequest,
   AgentQuestionRequest,
   AttachmentContent,
+  CodexEvent,
   PermissionReply,
   StagedAttachment,
 } from './platform/types'
@@ -87,6 +90,60 @@ export function createNativeAgentChat(bridge: RuntimeBridge): AgentChatTransport
   }
 }
 
+export interface CodexChatTransport {
+  listThreads: () => Promise<CodexThread[]>
+  startThread: (model?: string) => Promise<CodexThread>
+  resumeThread: (id: string) => Promise<CodexThread>
+  readThread: (threadId: string) => Promise<ChatMessage[]>
+  startTurn: (threadId: string, text: string, model?: string, effort?: string) => Promise<string>
+  interruptTurn: (threadId: string, turnId: string) => Promise<void>
+  forkThread: (threadId: string, lastTurnId?: string) => Promise<CodexThread>
+  listModels: () => Promise<CodexModelOption[]>
+  subscribeEvents: (onEvent: (event: CodexEvent) => void) => Promise<() => void>
+}
+
+/**
+ * Codex 传输：把 bridge 的通用 codexRpc 管道接到 CodexClient 的方法上，
+ * 再把返回归一化成界面形状（CodexMessage 暂借 ChatMessage 的壳，
+ * tools 进附件位以外的扩展位——见 CodexChatPanel 的渲染）。
+ */
+export function createCodexChat(bridge: RuntimeBridge): CodexChatTransport {
+  const rpcCall = async (method: string, params?: Record<string, unknown>): Promise<unknown> => {
+    const payload = await bridge.codexRpc(method, params)
+    return parseJsonPayload(payload.json)
+  }
+  const client = new CodexClient({ call: rpcCall })
+  return {
+    listThreads: () => client.listThreads(),
+    startThread: model => client.startThread(model),
+    resumeThread: id => client.resumeThread(id),
+    readThread: threadId => client.readThread(threadId).then(toChatMessages),
+    startTurn: (threadId, text, model, effort) => client.startTurn(threadId, text, model, effort),
+    interruptTurn: (threadId, turnId) => client.interruptTurn(threadId, turnId),
+    forkThread: (threadId, lastTurnId) => client.forkThread(threadId, lastTurnId),
+    listModels: () => client.listModels(),
+    subscribeEvents: async onEvent => {
+      await bridge.startCodexEventStream()
+      const handle = await bridge.addCodexEventListener(onEvent)
+      return () => {
+        void handle.remove().catch(() => undefined)
+        void bridge.stopCodexEventStream().catch(() => undefined)
+      }
+    },
+  }
+}
+
+function toChatMessages(messages: CodexMessage[]): ChatMessage[] {
+  return messages.map(message => ({
+    id: message.id,
+    role: message.role,
+    text: message.text,
+    attachments: [],
+    reasoning: message.reasoning,
+    tools: message.tools,
+  }))
+}
+
 /**
  * 发完消息后的跟随轮询：没有流式通道时，用“消息表不再变长”判定本轮结束。
  *
@@ -107,6 +164,35 @@ export async function pollUntilSettled(
       latest = await listMessages()
     } catch {
       // 单轮失败不炸：服务重启抖动时跳过本轮，连续失败由 maxRounds 兜底。
+      await new Promise(resolve => setTimeout(resolve, intervalMs))
+      continue
+    }
+    const fingerprint = `${latest.length}:${latest.length > 0 ? latest[latest.length - 1].text : ''}`
+    steady = fingerprint === previous ? steady + 1 : 0
+    previous = fingerprint
+    if (steady >= 2) return latest
+    await new Promise(resolve => setTimeout(resolve, intervalMs))
+  }
+  return latest
+}
+
+/**
+ * Codex 版跟随轮询：同一套“不再变长即停”规则，跑在 CodexMessage 上。
+ * 单独一份而不是泛型化——两个消息形状不同，硬泛型只会把指纹逻辑藏起来。
+ */
+export async function pollCodexUntilSettled<T extends { text: string }>(
+  listMessages: () => Promise<T[]>,
+  options?: { intervalMs?: number; maxRounds?: number },
+): Promise<T[]> {
+  const intervalMs = options?.intervalMs ?? 2000
+  const maxRounds = options?.maxRounds ?? 90
+  let previous = ''
+  let steady = 0
+  let latest: T[] = []
+  for (let round = 0; round < maxRounds; round += 1) {
+    try {
+      latest = await listMessages()
+    } catch {
       await new Promise(resolve => setTimeout(resolve, intervalMs))
       continue
     }

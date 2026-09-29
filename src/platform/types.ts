@@ -171,6 +171,17 @@ export interface AgentEvent {
   data: unknown
 }
 
+/** Codex 服务状态：stdio 无端口，进程在位即运行中。 */
+export interface CodexEngineState {
+  running: boolean
+}
+
+/** Codex 服务端通知：method 原样透出，params 优先按对象解析。 */
+export interface CodexEvent {
+  method: string
+  params: unknown
+}
+
 /** 聊天分段：文本直传正文；文件/图片传落点内的访客路径引用。 */
 export type AgentChatPartType = 'text' | 'file' | 'image'
 
@@ -783,6 +794,17 @@ export interface RuntimeBridge {
   startAgentEventStream: () => Promise<void>
   stopAgentEventStream: () => Promise<void>
   addAgentEventListener: (listener: (event: AgentEvent) => void) => Promise<ListenerHandle>
+  /**
+   * Codex 服务：stdio 私有通道，无端口密码。rpc 方法名走白名单，
+   * params 必须是可序列化对象；事件经 codexEvent 送达。
+   */
+  codexEngineState: () => Promise<CodexEngineState>
+  startCodexServer: () => Promise<CodexEngineState>
+  stopCodexServer: () => Promise<CodexEngineState>
+  codexRpc: (method: string, params?: Record<string, unknown>) => Promise<AgentChatJson>
+  startCodexEventStream: () => Promise<void>
+  stopCodexEventStream: () => Promise<void>
+  addCodexEventListener: (listener: (event: CodexEvent) => void) => Promise<ListenerHandle>
   addRuntimeProgressListener: (listener: (event: RuntimeProgress) => void) => Promise<ListenerHandle>
   addTerminalOutputListener: (listener: (event: TerminalChunk) => void) => Promise<ListenerHandle>
   addTerminalExitListener: (listener: (event: TerminalExit) => void) => Promise<ListenerHandle>

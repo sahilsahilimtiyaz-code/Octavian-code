@@ -34,6 +34,8 @@ import type {
   AgentEngineServerState,
   AgentEvent,
   AttachmentContent,
+  CodexEngineState,
+  CodexEvent,
   PermissionReply,
   StagedAttachment,
   ShizukuState,
@@ -671,6 +673,61 @@ export function validateAgentEvent(value: unknown): AgentEvent {
     }
   }
   return { type, data: data ?? null }
+}
+
+const CODEX_RPC_METHODS: readonly string[] = [
+  'initialize',
+  'thread/start',
+  'thread/resume',
+  'thread/fork',
+  'thread/list',
+  'thread/read',
+  'thread/turns/list',
+  'thread/items/list',
+  'turn/start',
+  'turn/interrupt',
+  'turn/steer',
+  'model/list',
+  'account/read',
+  'account/rateLimits/read',
+  'config/read',
+  'collaborationMode/list',
+]
+const CODEX_RPC_PARAMS_MAX_CHARS = 512 * 1024
+
+/** RPC 方法名：与原生侧白名单同一组取值，两边都拦。 */
+export function validateCodexMethod(value: unknown): string {
+  if (typeof value !== 'string' || !CODEX_RPC_METHODS.includes(value)) {
+    throw new Error('不支持的调用')
+  }
+  return value
+}
+
+/** RPC 参数：纯对象可序列化形态，超限拒绝。 */
+export function validateCodexParams(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  const record = asRecord(value, '调用参数')
+  let json: string
+  try {
+    json = JSON.stringify(record) ?? ''
+  } catch {
+    throw new Error('调用参数无法序列化')
+  }
+  if (json === '' || json.length > CODEX_RPC_PARAMS_MAX_CHARS) throw new Error('调用参数过大')
+  return json
+}
+
+/** Codex 服务端通知：method 原样透出，params 保持对象形态。 */
+export function validateCodexEvent(value: unknown): CodexEvent {
+  const record = asRecord(value, 'Codex 事件')
+  const method = typeof record.method === 'string' && record.method !== '' ? record.method : 'message'
+  return { method, params: record.params ?? null }
+}
+
+/** Codex 服务状态：只有运行位。 */
+export function validateCodexEngineState(value: unknown): CodexEngineState {
+  const record = asRecord(value, 'Codex 服务状态')
+  return { running: requiredBoolean(record.running, 'Codex 服务运行位') }
 }
 
 /** 会话标识：opencode 形态（字母数字 + 下划线/连字符，64 以内）。 */

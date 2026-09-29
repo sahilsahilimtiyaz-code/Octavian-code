@@ -55,6 +55,7 @@ import type { ThemeMode } from './theme'
 import { AGENT_COMMANDS, AGENT_LOGIN_HINTS, findAgentCommand } from './agentCommands'
 import { AGENT_ENGINES, hasStoredEngineId, readEngineId, saveEngineId, type EngineId } from './agentEngines'
 import { OpenCodeChatPanel } from './components/OpenCodeChatPanel'
+import { CodexChatPanel } from './components/CodexChatPanel'
 import { runtimeBridge } from './platform/native'
 import { readLogInsights } from './logInsights'
 import { validateHarnessPermissionMode } from './harnessPermissionMode'
@@ -798,6 +799,12 @@ function ConversationScreen({ busy, bridge, keepAlive, runtime, onInstall, onLau
           harnessRunning={runtime.phase === 'running'}
           onInstall={onInstall}
           onOpenTerminal={onOpenTerminal}
+        />
+      ) : engine.transport === 'codex-server' ? (
+        <CodexChatPanel
+          bridge={bridge}
+          installed={installed}
+          onInstall={onInstall}
         />
       ) : engine.transport === 'pty' && engine.cliCommand !== undefined ? (
         <section className="launch-panel">
@@ -3907,17 +3914,18 @@ export function App() {
    * 引擎感知的打开入口：按用户当前选择的引擎分流，绝不硬编码 Harness。
    *
    * - deepseek：走原有的 Harness 启动流程（含凭据门禁与更新检查）；
-   * - opencode：落到对话页的 OpenCode 面板（服务启停由面板接管，不在这里自作主张）；
+   * - opencode / codex：落到对话页各自的面板（服务启停由面板接管，不在这里自作主张）；
    * - pty 系：在终端中直达对应 CLI。
    */
   const launchConversation = useCallback(() => {
     autoLaunchAttempted.current = true
-    const engine = AGENT_ENGINES.find(item => item.id === readEngineId()) ?? AGENT_ENGINES[0]
+    const engineId = readEngineId()
+    const engine = AGENT_ENGINES.find(item => item.id === engineId) ?? AGENT_ENGINES[0]
     if (engine.transport === 'harness') {
       openHarness(false)
       return
     }
-    if (engine.transport === 'opencode-serve') {
+    if (engine.transport === 'opencode-serve' || engine.transport === 'codex-server') {
       setActiveView('conversation')
       return
     }

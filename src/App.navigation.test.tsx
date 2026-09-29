@@ -171,6 +171,9 @@ beforeEach(() => {
   window.localStorage.clear()
   window.localStorage.setItem('dsh-mobile-language-v1', 'zh-CN')
   window.localStorage.setItem('dsh-mobile-onboarding-v1', '1')
+  // 本文件自带夹具（见共享夹具同名注释）：引擎固定为 deepseek，
+  // 导航用例测的是 Harness 流程里的历史 mechanics，与引擎选择无关。
+  window.localStorage.setItem('octacode-engine-v1', 'deepseek')
   // jsdom 的会话历史在整个测试文件内共享：把当前记录复位成干净的根地址，
   // 保证每个用例的首屏都是主视图，也不会读到上一个用例留下的片段。
   window.history.replaceState(null, '', '/')
