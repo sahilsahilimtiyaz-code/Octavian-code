@@ -650,10 +650,9 @@ class AgentEngineServer(private val store: RuntimeStore) {
     fun start(requestedPort: Int? = null): AgentEngineState = synchronized(lock) {
         if (process?.isAlive == true && isReachable(port)) return state()
         stopLocked()
-        // 先布好启动硬链接：dsh-runner/proot 是 nativeLibraryDir 的硬链接，
-        // 之前只有 Harness 启动流程会创建——没开过 DeepSeek 的用户这里是空的，
-        // 这正是“APK 明明带了运行器却报缺失”的根因。
-        store.prepareLaunchFiles()
+        // 启动硬链接由 EngineLaunchResolver 在解析时布好（和 Harness 同一入口），
+        // 这里不再重复——之前只有 Harness 流程会创建，没开过 DeepSeek 的用户
+        // 在这里报缺失，那正是上一个版本的根因。
         // 自动选端口：明确指定的只认那一个；缺省从 4097 起顺延找空位。
         // 背景：真机上 4097 可能被上一次运行的孤儿进程占着（应用被杀时
         // 来不及收尸），也可能被其它应用占着——无论哪种，换个端口服务
@@ -677,6 +676,8 @@ class AgentEngineServer(private val store: RuntimeStore) {
         }
         // 预检：ProcessBuilder 起不来时只抛裸 IOException，把真因（不可执行、
         // 缺文件）在这里先说清楚，免得用户拿着一句“启动失败”干瞪眼。
+        // 注意：访客侧的完整预检（-w 落点、wrapper、本体）与 profile 探测
+        // 都在 EngineLaunchResolver 里，这里只拦宿主侧一眼可见的问题。
         if (!store.launchRunnerFile.isFile) {
             throw RuntimeFailure("RUNNER_UNAVAILABLE", "APK 未包含当前架构的受信任运行器")
         }
@@ -695,36 +696,27 @@ class AgentEngineServer(private val store: RuntimeStore) {
             targetPort.toString(),
         )
         val delivery = RuntimeSecretPolicy.delivery(mapOf(SERVER_PASSWORD_ENV to password), 0)
-        // 投递区绑定一起带进访客：附件落点（/mnt/inbox）对 opencode 可见，无需新挂载点。
-        // 不可访问时返回空列表（已有语义），服务照常启动，只是附件功能不可用。
-        // /dev 是地基绑定（urandom/null 没有它们很多运行时起不来）；
-        // /proc 刻意不绑：宿主 proc 会盖掉 PRoot 自己的进程视图，
-        // 真机实测它一绑上访客 getcwd() 就 ENOSYS（sh 连启动目录都读不到）。
-        // seccomp 在 5.15 内核 + 自带 Ubuntu 用户态下只会挡掉 JSC JIT 与
-        // 新 glibc 的 syscall（如 clone3），关掉走默认直通。
-        val binds = listOf(ProotBindMount("/dev")) +
-            RuntimeMailbox(store).bindMounts()
-        val argv = RuntimeCommand.prootArgv(
-            store,
-            entrypoint,
-            bindMounts = binds,
+        // 启动档走统一解析器：profile 探测 + 回退 + 预检都在里面，
+        // 不再手拼 binds/seccomp（那正是之前每个机型换个死法的根因）。
+        val spec = EngineLaunchResolver(store.hostContext, store).launchEngine(
+            engineId = "opencode",
+            entrypoint = entrypoint,
+            probeEntrypoint = listOf("/usr/local/bin/opencode", "--version"),
+            cliRelativePath = "usr/local/bin/opencode",
             secrets = delivery,
         )
         val logFile = File(store.harnessPidFile.parentFile, "opencode-serve.log")
         logFile.parentFile?.mkdirs()
-        // 启动环境与 Harness 路径完全一致：清空继承环境后铺 hostEnvironment。
-        // 之前这里直接继承应用进程环境，既没有 PROOT_TMP_DIR（PRoot 连
-        // 临时目录都建不出来就以 permission denied 暴毙），也没有
-        // PROOT_LOADER，还漏着宿主的 LD_LIBRARY_PATH——这正是真机上
-        // “进程意外退出”的根因。
+        // 启动环境直接取解析结果：清空继承环境后铺档里的（PROOT_TMP_DIR、
+        // PROOT_LOADER、seccomp 开关都在里面，和 Harness 同源）。
         val started = try {
-            ProcessBuilder(argv)
+            ProcessBuilder(spec.argv)
                 .directory(store.currentRoot)
                 .redirectErrorStream(true)
                 .redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
                 .also { builder ->
                     builder.environment().clear()
-                    builder.environment().putAll(RuntimeCommand.hostEnvironment(store.hostContext, store, true))
+                    builder.environment().putAll(spec.environment)
                 }
                 .start()
         } catch (error: Throwable) {

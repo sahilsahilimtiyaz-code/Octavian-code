@@ -51,8 +51,7 @@ class CodexEngineServer(private val store: RuntimeStore) {
     fun start(): CodexEngineState = synchronized(lock) {
         if (process?.isAlive == true) return state()
         stopLocked()
-        // 同 opencode 侧：没开过 Harness/终端的用户这里没有启动硬链接，先布好。
-        store.prepareLaunchFiles()
+        // 启动硬链接由 EngineLaunchResolver 在解析时布好，这里只做宿主侧速检。
         if (!File(store.currentRoot, "usr/local/bin/codex").isFile) {
             throw RuntimeFailure("AGENT_ENGINE_MISSING", "运行时未内置 codex，请先安装运行时")
         }
@@ -84,24 +83,25 @@ class CodexEngineServer(private val store: RuntimeStore) {
     }
 
     private fun startAttempt(guestArgv: List<String>) {
-        val argv = RuntimeCommand.prootArgv(
-            store,
-            guestArgv,
-            // /dev 是地基绑定；/proc 不绑（盖掉 PRoot 进程视图会导致访客 getcwd ENOSYS）。
-            bindMounts = listOf(ProotBindMount("/dev")) +
-                RuntimeMailbox(store).bindMounts(),
+        // 启动档同样走统一解析器（argv 形态由它按探测结果定，这里只给入口）。
+        // 注意：argv 如果有两种（带/不带 --listen）就各走一次完整解析，
+        // 探中的那一套直接用来起真进程，不浪费第二次探测。
+        val spec = EngineLaunchResolver(store.hostContext, store).launchEngine(
+            engineId = "codex",
+            entrypoint = guestArgv,
+            probeEntrypoint = listOf("/usr/local/bin/codex", "--version"),
+            cliRelativePath = "usr/local/bin/codex",
+            secrets = RuntimeSecretDelivery.NONE,
         )
         val logFile = File(store.harnessPidFile.parentFile, "codex-app-server.log")
         logFile.parentFile?.mkdirs()
-        // 与 Harness 路径一致的启动环境（见 AgentEngineServer 注释）：
-        // 不清空继承环境，PRoot 一样起不来。
         val launched = try {
-            ProcessBuilder(argv)
+            ProcessBuilder(spec.argv)
                 .directory(store.currentRoot)
                 .redirectError(ProcessBuilder.Redirect.appendTo(logFile))
                 .also { builder ->
                     builder.environment().clear()
-                    builder.environment().putAll(RuntimeCommand.hostEnvironment(store.hostContext, store, true))
+                    builder.environment().putAll(spec.environment)
                 }
                 .start()
         } catch (error: Throwable) {
