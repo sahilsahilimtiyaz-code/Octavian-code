@@ -460,6 +460,20 @@ export class OpenCodeClient {
     return parseMessageList(await this.request(`/session/${encodeURIComponent(sessionId)}/message`))
   }
 
+  async renameSession(sessionId: string, title: string): Promise<void> {
+    if (sessionId === '') throw new Error('会话 id 缺失')
+    if (title.trim() === '') throw new Error('会话标题为空')
+    await this.request(`/session/${encodeURIComponent(sessionId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ title }),
+    })
+  }
+
+  async deleteSession(sessionId: string): Promise<void> {
+    if (sessionId === '') throw new Error('会话 id 缺失')
+    await this.request(`/session/${encodeURIComponent(sessionId)}/remove`, { method: 'DELETE' })
+  }
+
   async sendMessage(sessionId: string, text: string, parts?: AgentChatPart[]): Promise<void> {
     if (sessionId === '') throw new Error('会话 id 缺失')
     if (parts !== undefined) {

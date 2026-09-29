@@ -1632,6 +1632,31 @@ button:disabled {
   background: var(--gold-soft);
 }
 
+/* 会话行：名 + 改名/删除。横向滚动条里每条会话自成一组。 */
+.chat-session-row {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+
+.chat-row-button {
+  width: 32px;
+  height: 32px;
+}
+
+.chat-rename-input {
+  min-width: 0;
+  width: 150px;
+  min-height: 2.25rem;
+  padding: 6px 10px;
+  border: 1px solid var(--blue-line);
+  border-radius: var(--radius-control);
+  color: var(--ink);
+  background: var(--surface);
+  font-size: 0.8125rem;
+}
+
 .chat-transcript {
   display: flex;
   flex-direction: column;

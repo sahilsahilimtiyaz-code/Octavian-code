@@ -254,6 +254,25 @@ class AgentEngineServer(private val store: RuntimeStore) {
     }
 
     /**
+     * 会话改名：`PATCH /session/{id} {title}`（SDK 确认的 body 键）。
+     * 标题 1–120 字符，与建会话同一套限制。
+     */
+    fun sessionRename(sessionId: String, title: String): String = synchronized(lock) {
+        if (title.isEmpty() || title.length > 120) {
+            throw RuntimeFailure("SETTINGS_INVALID", "会话标题无效")
+        }
+        return relay("PATCH", "/session/" + requireSessionId(sessionId), "{\"title\":" + jsonQuote(title) + "}")
+    }
+
+    /**
+     * 会话删除：`DELETE /session/{id}/remove`，成功返回布尔。
+     * 注意方法名是 remove 而不是 delete（SDK 路由确认），写错会 404。
+     */
+    fun sessionDelete(sessionId: String): String = synchronized(lock) {
+        return relay("DELETE", "/session/" + requireSessionId(sessionId) + "/remove", null)
+    }
+
+    /**
      * 中止本轮运行：`POST /session/{id}/abort`，无请求体，成功返回布尔。
      *
      * 界面在发送中/跟随中把发送键换成停止键，点下即调这里并停掉轮询——

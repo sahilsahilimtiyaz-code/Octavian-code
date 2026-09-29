@@ -65,6 +65,24 @@ describe('createNativeAgentChat', () => {
     })
   })
 
+  it('改名删除透传', async () => {
+    const calls: string[] = []
+    const bridge = stubBridge({
+      agentSessionRename: () => {
+        calls.push('rename')
+        return Promise.resolve({ json: '{"id":"s1","title":"t"}' })
+      },
+      agentSessionDelete: () => {
+        calls.push('delete')
+        return Promise.resolve({ json: 'true' })
+      },
+    })
+    const chat = createNativeAgentChat(bridge)
+    await chat.renameSession('s1', 't')
+    await chat.deleteSession('s1')
+    expect(calls).toEqual(['rename', 'delete'])
+  })
+
   it('中止/分叉/审批透传并归一化', async () => {
     const calls: string[] = []
     const bridge = stubBridge({

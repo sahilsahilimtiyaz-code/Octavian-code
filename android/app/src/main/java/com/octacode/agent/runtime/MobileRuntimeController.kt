@@ -143,6 +143,16 @@ class MobileRuntimeController(
         agentEngine.chatHistory(sessionId)
     }
 
+    fun agentSessionRename(sessionId: String, title: String): String = lifecycleLock.withLock {
+        ensureOpen()
+        agentEngine.sessionRename(sessionId, title.trim())
+    }
+
+    fun agentSessionDelete(sessionId: String): String = lifecycleLock.withLock {
+        ensureOpen()
+        agentEngine.sessionDelete(sessionId)
+    }
+
     fun agentChatSend(sessionId: String, text: String): String = lifecycleLock.withLock {
         ensureOpen()
         agentEngine.chatSend(sessionId, text)

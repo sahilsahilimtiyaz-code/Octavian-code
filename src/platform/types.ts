@@ -764,6 +764,8 @@ export interface RuntimeBridge {
   agentChatSessions: () => Promise<AgentChatJson>
   agentChatCreate: (title: string, modelID?: string, variant?: string) => Promise<AgentChatJson>
   agentChatHistory: (sessionId: string) => Promise<AgentChatJson>
+  agentSessionRename: (sessionId: string, title: string) => Promise<AgentChatJson>
+  agentSessionDelete: (sessionId: string) => Promise<AgentChatJson>
   agentChatSend: (sessionId: string, text: string, parts?: AgentChatPart[]) => Promise<AgentChatJson>
   /**
    * 附件落点：base64 写进 `inbox/attachments`，返回访客路径。

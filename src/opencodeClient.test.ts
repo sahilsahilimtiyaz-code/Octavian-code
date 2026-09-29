@@ -293,6 +293,21 @@ describe('中止/分叉与审批直连', () => {
     await expect(client.abortSession('')).rejects.toThrow()
   })
 
+  it('改名用 PATCH，删除用 DELETE .../remove', async () => {
+    const calls: Array<[string, RequestInit]> = []
+    const client = clientWith(calls)
+    await client.renameSession('s1', '新标题')
+    expect(calls[0][0]).toBe('http://127.0.0.1:4097/session/s1')
+    expect(calls[0][1].method).toBe('PATCH')
+    expect(JSON.parse(calls[0][1].body as string)).toEqual({ title: '新标题' })
+    await client.deleteSession('s1')
+    expect(calls[1][0]).toBe('http://127.0.0.1:4097/session/s1/remove')
+    expect(calls[1][1].method).toBe('DELETE')
+    await expect(client.renameSession('', 't')).rejects.toThrow()
+    await expect(client.renameSession('s1', '   ')).rejects.toThrow()
+    await expect(client.deleteSession('')).rejects.toThrow()
+  })
+
   it('fork 带 messageID 并归一化新会话', async () => {
     vi.stubGlobal(
       'fetch',

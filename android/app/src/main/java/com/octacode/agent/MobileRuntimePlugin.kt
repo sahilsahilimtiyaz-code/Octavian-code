@@ -519,6 +519,28 @@ class MobileRuntimePlugin : Plugin() {
         }
     }
 
+    /**
+     * 权限：应用内桥接。
+     * 会话改名（`PATCH /session/{id} {title}`）与删除（`DELETE .../remove`）：
+     * 方法名与 body 键按服务端 SDK 落实，写错会 4xx，界面如实展示。
+     */
+    @PluginMethod
+    fun agentSessionRename(call: PluginCall) {
+        execute(call) {
+            val sessionId = call.getString("sessionId")?.trim().orEmpty()
+            val title = call.getString("title")?.trim().orEmpty()
+            JSObject().put("json", controller.agentSessionRename(sessionId, title))
+        }
+    }
+
+    @PluginMethod
+    fun agentSessionDelete(call: PluginCall) {
+        execute(call) {
+            val sessionId = call.getString("sessionId")?.trim().orEmpty()
+            JSObject().put("json", controller.agentSessionDelete(sessionId))
+        }
+    }
+
     @PluginMethod
     fun agentChatSend(call: PluginCall) {
         execute(call) {

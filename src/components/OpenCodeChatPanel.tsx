@@ -6,12 +6,14 @@ import {
   Image,
   Loader2,
   Paperclip,
+  Pencil,
   Plus,
   Power,
   RefreshCw,
   SendHorizontal,
   Square,
   SquareTerminal,
+  Trash2,
   X,
 } from 'lucide-react'
 import {
@@ -114,6 +116,9 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
   const [chatError, setChatError] = useState<string | null>(null)
   const [composer, setComposer] = useState('')
   const [creating, setCreating] = useState(false)
+  const [renaming, setRenaming] = useState<{ id: string; draft: string } | null>(null)
+  const [deleting, setDeleting] = useState<string | null>(null)
+  const [sessionBusy, setSessionBusy] = useState<string | null>(null)
   const [staged, setStaged] = useState<StagedFile[]>([])
   const [staging, setStaging] = useState(false)
   const [thumbs, setThumbs] = useState<Record<string, string>>({})
@@ -429,6 +434,60 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
     return () => window.clearInterval(timer)
   }, [activeId, sending, following, refreshApprovals])
 
+  const startRename = (session: OpenCodeSession) => {
+    setDeleting(null)
+    setRenaming({ id: session.id, draft: session.title })
+  }
+
+  const confirmRename = () => {
+    if (renaming === null) return
+    const title = renaming.draft.trim()
+    if (title === '' || title.length > 120) {
+      setChatError(t('会话标题为 1–120 个字符。'))
+      return
+    }
+    const renamedId = renaming.id
+    setSessionBusy(renamedId)
+    setChatError(null)
+    void transport.renameSession(renamedId, title).then(
+      () => {
+        if (cancelled.current) return
+        setSessionBusy(null)
+        setRenaming(null)
+        setSessions(previous => previous.map(item => (item.id === renamedId ? { ...item, title } : item)))
+      },
+      error => {
+        if (cancelled.current) return
+        setSessionBusy(null)
+        setChatError(errorMessage(error))
+      },
+    )
+  }
+
+  const confirmDelete = (sessionId: string) => {
+    setSessionBusy(sessionId)
+    setChatError(null)
+    void transport.deleteSession(sessionId).then(
+      () => {
+        if (cancelled.current) return
+        setSessionBusy(null)
+        setDeleting(null)
+        setRenaming(current => (current?.id === sessionId ? null : current))
+        const remaining = sessions.filter(item => item.id !== sessionId)
+        setSessions(remaining)
+        if (activeId === sessionId) {
+          setActiveId(remaining.length > 0 ? remaining[0].id : null)
+        }
+      },
+      error => {
+        if (cancelled.current) return
+        setSessionBusy(null)
+        setDeleting(null)
+        setChatError(errorMessage(error))
+      },
+    )
+  }
+
   const createSession = () => {
     setCreating(true)
     setChatError(null)
@@ -718,16 +777,87 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
               {forking ? <Loader2 className="spin" size={16} /> : <GitFork size={16} />}{t('分叉')}
             </button>
             {loading && <span className="settings-note">{t('正在读取会话')}</span>}
-            {sessions.map(session => (
-              <button
-                key={session.id}
-                type="button"
-                className={session.id === activeId ? 'chat-session active' : 'chat-session'}
-                onClick={() => setActiveId(session.id)}
-              >
-                {session.title}
-              </button>
-            ))}
+            {sessions.map(session => {
+              const busyRow = sessionBusy === session.id
+              const armingDelete = deleting === session.id
+              if (renaming?.id === session.id) {
+                return (
+                  <span className="chat-session-row" key={session.id}>
+                    <input
+                      className="chat-rename-input"
+                      type="text"
+                      value={renaming.draft}
+                      maxLength={120}
+                      onChange={event => setRenaming({ id: session.id, draft: event.target.value })}
+                      onKeyDown={event => {
+                        if (event.key === 'Enter') confirmRename()
+                        if (event.key === 'Escape') setRenaming(null)
+                      }}
+                      aria-label={t('会话新标题')}
+                      autoFocus
+                    />
+                    <button
+                      className="icon-button chat-row-button"
+                      type="button"
+                      onClick={confirmRename}
+                      disabled={busyRow}
+                      aria-label={t('保存标题')}
+                    >
+                      {busyRow ? <Loader2 className="spin" size={16} /> : <Check size={16} />}
+                    </button>
+                    <button
+                      className="icon-button chat-row-button"
+                      type="button"
+                      onClick={() => setRenaming(null)}
+                      aria-label={t('取消')}
+                    >
+                      <X size={16} />
+                    </button>
+                  </span>
+                )
+              }
+              return (
+                <span className="chat-session-row" key={session.id}>
+                  <button
+                    type="button"
+                    className={session.id === activeId ? 'chat-session active' : 'chat-session'}
+                    onClick={() => setActiveId(session.id)}
+                  >
+                    {session.title}
+                  </button>
+                  <button
+                    className="icon-button chat-row-button"
+                    type="button"
+                    onClick={() => startRename(session)}
+                    title={t('重命名')}
+                    aria-label={t('重命名会话')}
+                  >
+                    <Pencil size={15} />
+                  </button>
+                  {armingDelete ? (
+                    <button
+                      className="button button-danger-quiet compact-button"
+                      type="button"
+                      onClick={() => confirmDelete(session.id)}
+                      disabled={busyRow}
+                      title={t('再次点击确认删除，删除后不可恢复')}
+                    >
+                      {busyRow ? <Loader2 className="spin" size={16} /> : t('确认删除')}
+                    </button>
+                  ) : (
+                    <button
+                      className="icon-button chat-row-button"
+                      type="button"
+                      onClick={() => setDeleting(session.id)}
+                      title={t('删除会话')}
+                      aria-label={t('删除会话')}
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  )}
+                </span>
+              )
+            })}
           </section>
 
           {chatError !== null && (
