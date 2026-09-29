@@ -635,7 +635,7 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
       <section className="chat-serverbar">
         <span className={`phase-badge ${server?.running === true ? 'phase-green' : 'phase-blue'}`}>
           <span className="phase-dot" />
-          {server === null ? t('读取中') : server.running ? t('服务运行中') : t('服务未启动')}
+          {server === null ? t('读取中') : server.running ? `${t('服务运行中')} :${server.port}` : t('服务未启动')}
         </span>
         <button
           className="button button-secondary compact-button"

@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">DeepSeek Harness</string>
+    <string name="app_name">Octa Code</string>
     <string name="harness_title">Harness chat</string>
     <string name="harness_back_to_app">Back to app</string>
     <string name="harness_open_management">Open app settings</string>
@@ -21,7 +21,7 @@
     <string name="keep_alive_notification_text">Tap to return to the app and manage the runtime</string>
     <!-- Diagnostic log export: static share sheet text with no file path or log content. -->
     <string name="diagnostic_share_title">Export diagnostic log</string>
-    <string name="diagnostic_share_subject">DeepSeek Harness diagnostic log</string>
+    <string name="diagnostic_share_subject">Octa Code diagnostic log</string>
     <!-- Floating ball. Fixed copy: no URL, port, credential, or session content. -->
     <!-- Screen-reader name for the ball itself: a noun phrase, not the status-sentence notification title below. -->
     <string name="overlay_ball_content_description">Floating ball</string>

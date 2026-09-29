@@ -494,13 +494,24 @@ class AgentEngineServer(private val store: RuntimeStore) {
     fun start(requestedPort: Int? = null): AgentEngineState = synchronized(lock) {
         if (process?.isAlive == true && isReachable(port)) return state()
         stopLocked()
-        val targetPort = requestedPort ?: DEFAULT_PORT
-        if (targetPort !in 1024..65535) {
-            throw RuntimeFailure("SETTINGS_INVALID", "Agent 服务端口超出范围")
+        // 自动选端口：明确指定的只认那一个；缺省从 4097 起顺延找空位。
+        // 背景：真机上 4097 可能被上一次运行的孤儿进程占着（应用被杀时
+        // 来不及收尸），也可能被其它应用占着——无论哪种，换个端口服务
+        // 照常跑（中继不直连端口），总比一个修不好的报错强。
+        // 显式指定的端口仍保持严格失败：那是用户明确要的绑定。
+        val candidates = if (requestedPort != null) {
+            if (requestedPort !in 1024..65535) {
+                throw RuntimeFailure("SETTINGS_INVALID", "Agent 服务端口超出范围")
+            }
+            listOf(requestedPort)
+        } else {
+            (DEFAULT_PORT..LAST_FALLBACK_PORT).toList()
         }
-        if (!isPortFree(targetPort)) {
-            throw RuntimeFailure("AGENT_ENGINE_PORT_BUSY", "Agent 服务端口已被占用")
-        }
+        val targetPort = candidates.firstOrNull { isPortFree(it) }
+            ?: throw RuntimeFailure(
+                "AGENT_ENGINE_PORT_BUSY",
+                "Agent 服务端口都被占用（${candidates.first} 起连续 ${candidates.size} 个）：请关闭占用端口的应用后重试",
+            )
         if (!File(store.currentRoot, "usr/local/bin/opencode").isFile) {
             throw RuntimeFailure("AGENT_ENGINE_MISSING", "运行时未内置 opencode，请先安装运行时")
         }
@@ -737,6 +748,8 @@ class AgentEngineServer(private val store: RuntimeStore) {
     companion object {
         /** 默认端口与 AndCode 一致，方便将来对接远端发现与文档互通。 */
         const val DEFAULT_PORT = 4097
+        /** 自动选端口的上界：4097 起连续 8 个，体面够用又不至于扫半个端口表。 */
+        const val LAST_FALLBACK_PORT = 4104
         const val SERVER_PASSWORD_ENV = "OPENCODE_SERVER_PASSWORD"
         private const val PASSWORD_BYTES = 32
         private const val START_TIMEOUT_MILLIS = 60_000L
