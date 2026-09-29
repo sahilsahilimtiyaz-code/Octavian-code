@@ -12,6 +12,7 @@ import java.nio.file.StandardOpenOption
 import java.security.SecureRandom
 import java.util.Base64
 import java.util.concurrent.TimeUnit
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -377,10 +378,35 @@ class AgentEngineServer(private val store: RuntimeStore) {
 
     private fun jsonMatches(actual: JSONObject, expectedJson: String): Boolean {
         return try {
-            actual.similar(JSONObject(expectedJson))
+            jsonSimilar(actual, JSONObject(expectedJson))
         } catch (_: Throwable) {
             false
         }
+    }
+
+    /**
+     * 与顺序无关的 JSON 深度相等：Android 的 org.json 没有 `similar()`，
+     * key 顺序不同时直接比字符串会把 lenient/strict 误报成 custom
+     * （只影响展示，不影响写入——写路径不受它控制）。
+     */
+    private fun jsonSimilar(a: Any?, b: Any?): Boolean {
+        if (a is JSONObject && b is JSONObject) {
+            if (a.length() != b.length()) return false
+            val keys = a.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                if (!b.has(key) || !jsonSimilar(a.opt(key), b.opt(key))) return false
+            }
+            return true
+        }
+        if (a is JSONArray && b is JSONArray) {
+            if (a.length() != b.length()) return false
+            for (i in 0 until a.length()) {
+                if (!jsonSimilar(a.opt(i), b.opt(i))) return false
+            }
+            return true
+        }
+        return a?.toString() == b?.toString()
     }
 
     /**
@@ -640,7 +666,7 @@ class AgentEngineServer(private val store: RuntimeStore) {
         val targetPort = candidates.firstOrNull { isPortFree(it) }
             ?: throw RuntimeFailure(
                 "AGENT_ENGINE_PORT_BUSY",
-                "Agent 服务端口都被占用（${candidates.first} 起连续 ${candidates.size} 个）：请关闭占用端口的应用后重试",
+                "Agent 服务端口都被占用（${candidates.first()} 起连续 ${candidates.size} 个）：请关闭占用端口的应用后重试",
             )
         if (!File(store.currentRoot, "usr/local/bin/opencode").isFile) {
             throw RuntimeFailure("AGENT_ENGINE_MISSING", "运行时未内置 opencode，请先安装运行时")
