@@ -650,6 +650,10 @@ class AgentEngineServer(private val store: RuntimeStore) {
     fun start(requestedPort: Int? = null): AgentEngineState = synchronized(lock) {
         if (process?.isAlive == true && isReachable(port)) return state()
         stopLocked()
+        // 先布好启动硬链接：dsh-runner/proot 是 nativeLibraryDir 的硬链接，
+        // 之前只有 Harness 启动流程会创建——没开过 DeepSeek 的用户这里是空的，
+        // 这正是“APK 明明带了运行器却报缺失”的根因。
+        store.prepareLaunchFiles()
         // 自动选端口：明确指定的只认那一个；缺省从 4097 起顺延找空位。
         // 背景：真机上 4097 可能被上一次运行的孤儿进程占着（应用被杀时
         // 来不及收尸），也可能被其它应用占着——无论哪种，换个端口服务

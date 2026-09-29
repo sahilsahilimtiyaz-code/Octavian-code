@@ -51,6 +51,8 @@ class CodexEngineServer(private val store: RuntimeStore) {
     fun start(): CodexEngineState = synchronized(lock) {
         if (process?.isAlive == true) return state()
         stopLocked()
+        // 同 opencode 侧：没开过 Harness/终端的用户这里没有启动硬链接，先布好。
+        store.prepareLaunchFiles()
         if (!File(store.currentRoot, "usr/local/bin/codex").isFile) {
             throw RuntimeFailure("AGENT_ENGINE_MISSING", "运行时未内置 codex，请先安装运行时")
         }
