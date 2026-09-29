@@ -195,7 +195,10 @@ android {
         applicationId 'com.octacode.agent'
         minSdk 26
         targetSdk 35
-        versionCode 22
+        // versionCode 随 CI 自增（OCTACODE_VERSION_CODE=run_number）：每个绿构建都可
+        // 以覆盖安装上一个，终结“卸载重装”循环。本地构建没有该变量时保持 22。
+        // versionName 仍是人工语义版本，两者含义不同，不要互相推导。
+        versionCode (System.getenv('OCTACODE_VERSION_CODE')?.toInteger() ?: 22)
         versionName '0.2.0'
 
         buildConfigField 'String', 'DEFAULT_MANIFEST_URL', envBuildValue('DSH_RUNTIME_MANIFEST_URL')

@@ -38,6 +38,10 @@ jobs:
       DSH_KEYSTORE_B64_3: ${{ secrets.DSH_KEYSTORE_B64_3 }}
       DSH_KEYSTORE_B64_4: ${{ secrets.DSH_KEYSTORE_B64_4 }}
       DSH_KEYSTORE_PASSWORD: ${{ secrets.DSH_KEYSTORE_PASSWORD }}
+      # versionCode 随构建自增：同一个 workflow 的 run_number 只增不减，
+      # 因此每个绿构建的 APK 都能覆盖安装上一个，不再需要卸载重装。
+      # versionName 不受影响，仍是 APP_VERSION 的人工语义版本。
+      OCTACODE_VERSION_CODE: ${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
         with:

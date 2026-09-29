@@ -11,6 +11,8 @@
 
 - [ ] APK 的 `versionCode` / `versionName` 与 `android/app/build.gradle`、
       `.github/workflows/android-build.yml` 的 `APP_VERSION` **三者一致**（以仓库当前值为准），并通过团队签名校验。
+      注意：`versionCode` 自 Slice 0 起由 CI 按 run_number 自动递增（本地构建默认为 22），
+      因此验收时以 APK 实际携带的值为准，不再要求它等于 22；versionName 仍须等于 APP_VERSION。
 - [ ] Release 同时包含 APK、`runtime-manifest.json`、`rootfs.bundle`，三者来自同一次 CI run。
 - [ ] APK 内恰有一份 `assets/runtime/rootfs.bundle` 和运行时 manifest，没有 `.bak` 或其他 rootfs 副本。
 - [ ] 内嵌 manifest 的 rootfs SHA-256 与 APK 内 bundle 一致；全新安装无需手工填写运行时来源。
