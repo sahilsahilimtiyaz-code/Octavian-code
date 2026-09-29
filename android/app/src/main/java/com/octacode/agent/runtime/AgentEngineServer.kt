@@ -865,13 +865,42 @@ class AgentEngineServer(private val store: RuntimeStore) {
     }
 
     /** 就绪 = 端口上有 HTTP 应答（含 401：设了密码的 serve 对匿名探测就该这么答）。 */
+    private fun logFileFor(): File = File(store.harnessPidFile.parentFile, "opencode-serve.log")
+
+    /**
+     * 进程日志尾巴：opencode 把死因（用法错、panic、缺库）都写进 stdout，
+     * 而 stdout 重定向到了日志文件。把最后一段拼进报错里，
+     * 下次用户贴出来的就是死因本身，而不是“意外退出”四个字。
+     */
+    private fun logTail(logFile: File): String? {
+        return try {
+            if (!logFile.isFile) return null
+            val bytes = logFile.readBytes().takeLast(LOG_TAIL_BYTES)
+            if (bytes.isEmpty()) return null
+            String(bytes.toByteArray(), Charsets.UTF_8)
+                .replace(Regex("[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]"), " ")
+                .trim()
+                .takeIf { it.isNotEmpty() }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    /** 就绪 = 端口上有 HTTP 应答（含 401：设了密码的 serve 对匿名探测就该这么答）。 */
     private fun waitForReady(targetPort: Int) {
+        waitForReady(targetPort, logFileFor())
+    }
+
+    private fun waitForReady(targetPort: Int, logFile: File) {
         val deadline = System.currentTimeMillis() + START_TIMEOUT_MILLIS
         while (System.currentTimeMillis() < deadline) {
-            if (process?.isAlive != true) {
-                throw RuntimeFailure("AGENT_ENGINE_START_FAILED", "Agent 服务进程意外退出")
-            }
+            // 先看端口：服务可能 daemonize（父进程退出、端口接管），
+            // 也可能在我们轮询间隙刚好起来——通了就是通了，直接认领。
             if (isReachable(targetPort)) return
+            if (process?.isAlive != true) {
+                val tail = logTail(logFile)?.let { " 进程遗言：$it" } ?: ""
+                throw RuntimeFailure("AGENT_ENGINE_START_FAILED", "Agent 服务进程意外退出。$tail")
+            }
             try {
                 Thread.sleep(PROBE_INTERVAL_MILLIS)
             } catch (_: InterruptedException) {
@@ -879,7 +908,8 @@ class AgentEngineServer(private val store: RuntimeStore) {
                 throw RuntimeFailure("AGENT_ENGINE_START_FAILED", "Agent 服务启动被中断")
             }
         }
-        throw RuntimeFailure("AGENT_ENGINE_START_FAILED", "Agent 服务启动超时")
+        val tail = logTail(logFile)?.let { " 进程遗言：$it" } ?: ""
+        throw RuntimeFailure("AGENT_ENGINE_START_FAILED", "Agent 服务启动超时。$tail")
     }
 
     private fun isReachable(targetPort: Int): Boolean {
@@ -936,6 +966,7 @@ class AgentEngineServer(private val store: RuntimeStore) {
         private const val PROBE_TIMEOUT_MILLIS = 1_500
         private const val EVENT_RECONNECT_MILLIS = 3_000L
         private const val RELAY_TIMEOUT_MILLIS = 15_000
+        private const val LOG_TAIL_BYTES = 1_500
         private const val MAX_CHAT_TEXT_CHARS = 32_000
         private const val MAX_CHAT_PARTS = 8
         private const val MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024

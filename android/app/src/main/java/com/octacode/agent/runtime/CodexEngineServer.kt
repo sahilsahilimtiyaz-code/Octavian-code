@@ -128,7 +128,7 @@ class CodexEngineServer(private val store: RuntimeStore) {
             var answer: String? = null
             while (System.currentTimeMillis() < deadline) {
                 if (!launched.isAlive) {
-                    throw RuntimeFailure("AGENT_ENGINE_START_FAILED", "Codex 服务秒退（argv 不被该版本接受）")
+                    throw RuntimeFailure("AGENT_ENGINE_START_FAILED", "Codex 服务秒退（argv 不被该版本接受）。" + logTailNote(logFile))
                 }
                 if (handshake.latch.await(PROBE_STEP_MILLIS, TimeUnit.MILLISECONDS)) {
                     answer = handshake.response
@@ -136,10 +136,10 @@ class CodexEngineServer(private val store: RuntimeStore) {
                 }
             }
             if (answer == null) {
-                throw RuntimeFailure("AGENT_ENGINE_START_FAILED", "Codex 服务握手超时")
+                throw RuntimeFailure("AGENT_ENGINE_START_FAILED", "Codex 服务握手超时。" + logTailNote(logFile))
             }
             if (answer.contains("\"error\"")) {
-                throw RuntimeFailure("AGENT_ENGINE_START_FAILED", "Codex 服务握手被拒绝")
+                throw RuntimeFailure("AGENT_ENGINE_START_FAILED", "Codex 服务握手被拒绝。" + logTailNote(logFile))
             }
         } catch (failure: RuntimeFailure) {
             throw failure
@@ -253,6 +253,23 @@ class CodexEngineServer(private val store: RuntimeStore) {
         }
     }
 
+    /**
+     * 进程 stderr 尾巴（stdout 被读泵消费了，这里只能拿到 stderr 那一半）。
+     * opencode 侧是全量日志，这里是半量——有总比“秒退”两个字强。
+     */
+    private fun logTailNote(logFile: File): String {
+        val tail = try {
+            if (!logFile.isFile) return ""
+            String(logFile.readBytes().takeLast(LOG_TAIL_BYTES).toByteArray(), Charsets.UTF_8)
+                .replace(Regex("[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]"), " ")
+                .trim()
+                .takeIf { it.isNotEmpty() }
+        } catch (_: Throwable) {
+            null
+        } ?: return ""
+        return " 进程遗言：$tail"
+    }
+
     /** 读泵：带 id 的配对唤醒等待者，不带 id 的按通知交给监听器。 */
     private fun pumpOutput(output: BufferedReader) {
         while (!Thread.currentThread().isInterrupted) {
@@ -307,6 +324,7 @@ class CodexEngineServer(private val store: RuntimeStore) {
         private const val RPC_TIMEOUT_MILLIS = 60_000L
         private const val HANDSHAKE_TIMEOUT_MILLIS = 20_000L
         private const val PROBE_STEP_MILLIS = 500L
+        private const val LOG_TAIL_BYTES = 1_500
         private const val MAX_PARAMS_CHARS = 512 * 1024
         private val ID_PATTERN = Regex("\"id\"\\s*:\\s*(\\d+)")
         /**
