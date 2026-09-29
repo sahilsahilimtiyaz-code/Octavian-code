@@ -142,6 +142,7 @@ interface NativeRuntimePlugin {
   agentChatHistory(options: { sessionId: string }): Promise<unknown>
   agentSessionRename(options: { sessionId: string; title: string }): Promise<unknown>
   agentSessionDelete(options: { sessionId: string }): Promise<unknown>
+  agentMessageDelete(options: { sessionId: string; messageId: string }): Promise<unknown>
   agentChatSend(options: { sessionId: string; text?: string; parts?: unknown }): Promise<unknown>
   stageAgentAttachment(options: { fileName: string; mime: string; dataBase64: string }): Promise<unknown>
   agentChatFile(options: { guestPath: string }): Promise<unknown>
@@ -316,6 +317,9 @@ function createNativeBridge(): RuntimeBridge {
       .then(validateAgentChatJson),
     agentSessionDelete: sessionId => NativeRuntime
       .agentSessionDelete({ sessionId: validateAgentSessionId(sessionId) })
+      .then(validateAgentChatJson),
+    agentMessageDelete: (sessionId, messageId) => NativeRuntime
+      .agentMessageDelete({ sessionId: validateAgentSessionId(sessionId), messageId: validateAgentMessageId(messageId) })
       .then(validateAgentChatJson),
     agentChatSend: (sessionId, text, parts) => NativeRuntime
       .agentChatSend({

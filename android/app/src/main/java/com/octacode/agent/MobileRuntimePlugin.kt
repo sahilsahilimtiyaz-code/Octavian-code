@@ -541,6 +541,20 @@ class MobileRuntimePlugin : Plugin() {
         }
     }
 
+    /**
+     * 权限：应用内桥接。
+     * 单条消息删除（`DELETE /session/{sid}/message/{mid}`）：只删消息分段，
+     * 不回滚文件。重新生成/编辑重发的地基。
+     */
+    @PluginMethod
+    fun agentMessageDelete(call: PluginCall) {
+        execute(call) {
+            val sessionId = call.getString("sessionId")?.trim().orEmpty()
+            val messageId = call.getString("messageId")?.trim().orEmpty()
+            JSObject().put("json", controller.agentMessageDelete(sessionId, messageId))
+        }
+    }
+
     @PluginMethod
     fun agentChatSend(call: PluginCall) {
         execute(call) {

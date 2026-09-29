@@ -369,6 +369,8 @@ export function createBrowserBridge(): RuntimeBridge {
       Promise.reject(new Error('浏览器预览不支持本机 Agent 聊天')),
     agentSessionDelete: (): Promise<AgentChatJson> =>
       Promise.reject(new Error('浏览器预览不支持本机 Agent 聊天')),
+    agentMessageDelete: (): Promise<AgentChatJson> =>
+      Promise.reject(new Error('浏览器预览不支持本机 Agent 聊天')),
     agentChatSend: (): Promise<AgentChatJson> =>
       Promise.reject(new Error('浏览器预览不支持本机 Agent 聊天')),
     agentModels: (): Promise<AgentModelCatalog> => Promise.resolve({ models: [] }),

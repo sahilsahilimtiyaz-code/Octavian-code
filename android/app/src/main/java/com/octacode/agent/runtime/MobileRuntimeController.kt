@@ -153,6 +153,11 @@ class MobileRuntimeController(
         agentEngine.sessionDelete(sessionId)
     }
 
+    fun agentMessageDelete(sessionId: String, messageId: String): String = lifecycleLock.withLock {
+        ensureOpen()
+        agentEngine.messageDelete(sessionId, messageId)
+    }
+
     fun agentChatSend(sessionId: String, text: String): String = lifecycleLock.withLock {
         ensureOpen()
         agentEngine.chatSend(sessionId, text)

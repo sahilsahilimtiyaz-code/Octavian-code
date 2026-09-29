@@ -65,6 +65,19 @@ describe('createNativeAgentChat', () => {
     })
   })
 
+  it('消息删除透传', async () => {
+    const calls: Array<[string, string]> = []
+    const bridge = stubBridge({
+      agentMessageDelete: (sessionId: string, messageId: string) => {
+        calls.push([sessionId, messageId])
+        return Promise.resolve({ json: 'true' })
+      },
+    })
+    const chat = createNativeAgentChat(bridge)
+    await chat.deleteMessage('s1', 'm1')
+    expect(calls).toEqual([['s1', 'm1']])
+  })
+
   it('改名删除透传', async () => {
     const calls: string[] = []
     const bridge = stubBridge({

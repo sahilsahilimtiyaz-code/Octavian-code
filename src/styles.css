@@ -1998,6 +1998,51 @@ button:disabled {
   object-fit: contain;
 }
 
+/* 消息内编辑：气泡里展开改写区，保存即删后重发。 */
+.chat-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-edit textarea {
+  width: 100%;
+  min-height: 4.5rem;
+  padding: 8px 10px;
+  border: 1px solid var(--blue-line);
+  border-radius: var(--radius-inner);
+  color: var(--ink);
+  background: var(--surface);
+  font: inherit;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.chat-edit-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.chat-edit-button {
+  margin-top: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.chat-edit-button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.chat-message.user .chat-edit-button {
+  align-self: flex-end;
+}
+
 /* 聊天消息里的 Markdown：只管排版，不管颜色体系（跟随气泡变量）。 */
 .chat-bubble p {
   margin: 0 0 8px;

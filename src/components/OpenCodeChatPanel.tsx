@@ -119,6 +119,9 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
   const [renaming, setRenaming] = useState<{ id: string; draft: string } | null>(null)
   const [deleting, setDeleting] = useState<string | null>(null)
   const [sessionBusy, setSessionBusy] = useState<string | null>(null)
+  const [failedSend, setFailedSend] = useState<string | null>(null)
+  const [regenerating, setRegenerating] = useState(false)
+  const [editing, setEditing] = useState<{ id: string; draft: string } | null>(null)
   const [staged, setStaged] = useState<StagedFile[]>([])
   const [staging, setStaging] = useState(false)
   const [thumbs, setThumbs] = useState<Record<string, string>>({})
@@ -530,6 +533,7 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
     setComposer('')
     setStaged([])
     setSending(true)
+    setFailedSend(null)
     setChatError(null)
     void transport
       .sendMessage(activeId, text, withFiles ? parts : undefined)
@@ -544,6 +548,11 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
         error => {
           if (cancelled.current) return
           setSending(false)
+          // 发送失败把正文还给输入框：字不能丢，重试按钮直接再发一次。
+          if (!withFiles) {
+            setComposer(text)
+            setFailedSend(text)
+          }
           const message = errorMessage(error)
           // 401/403 基本就是模型没登录：中继只透状态码，文案在这里补。
           setChatError(
@@ -553,6 +562,94 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
           )
         },
       )
+  }
+
+  /**
+   * 重新生成：删掉最后一条用户消息之后的所有回复，原样重发那条用户消息。
+   *
+   * 先验后删：只要有一条待删消息没有服务端 id，整单取消，一条都不碰——
+   * 删一半发一半是最坏的结果。
+   */
+  const regenerate = () => {
+    if (activeId === null || busy || regenerating) return
+    const sessionId = activeId
+    const reversed = [...messages].reverse()
+    const lastUserOffset = reversed.findIndex(message => message.role === 'user')
+    if (lastUserOffset === -1) {
+      setChatError(t('没有可重新生成的用户消息。'))
+      return
+    }
+    const lastUser = reversed[lastUserOffset]
+    const trailing = reversed.slice(0, lastUserOffset)
+    if (lastUser.id === '' || trailing.some(message => message.id === '')) {
+      setChatError(t('该会话缺少消息标识，无法重写，请用分叉另起一局。'))
+      return
+    }
+    setRegenerating(true)
+    setChatError(null)
+    void (async () => {
+      try {
+        for (const message of trailing) {
+          if (cancelled.current) return
+          await transport.deleteMessage(sessionId, message.id)
+        }
+        if (cancelled.current) return
+        await transport.sendMessage(sessionId, lastUser.text)
+        if (cancelled.current) return
+        setRegenerating(false)
+        refreshMessages(sessionId, true)
+      } catch (error) {
+        if (cancelled.current) return
+        setRegenerating(false)
+        setChatError(errorMessage(error))
+      }
+    })()
+  }
+
+  /**
+   * 编辑重发：改某条用户消息，删掉它及之后的一切，用改过的正文重发。
+   * 同样先验后删，无 id 不动手。
+   */
+  const confirmEdit = () => {
+    if (editing === null || activeId === null || busy) return
+    const sessionId = activeId
+    const draft = editing.draft.trim()
+    if (draft === '') {
+      setChatError(t('消息内容不能为空。'))
+      return
+    }
+    const index = messages.findIndex(message => message.id === editing.id && message.id !== '')
+    if (index === -1) {
+      setChatError(t('找不到要编辑的消息，请刷新后重试。'))
+      return
+    }
+    const targets = messages.slice(index)
+    if (targets.some(message => message.id === '')) {
+      setChatError(t('该会话缺少消息标识，无法重写，请用分叉另起一局。'))
+      return
+    }
+    setEditing(null)
+    setSending(true)
+    setChatError(null)
+    void (async () => {
+      try {
+        for (const message of targets) {
+          if (cancelled.current) return
+          await transport.deleteMessage(sessionId, message.id)
+        }
+        if (cancelled.current) return
+        await transport.sendMessage(sessionId, draft)
+        if (cancelled.current) return
+        setSending(false)
+        refreshMessages(sessionId, true)
+      } catch (error) {
+        if (cancelled.current) return
+        setSending(false)
+        setComposer(draft)
+        setFailedSend(draft)
+        setChatError(errorMessage(error))
+      }
+    })()
   }
 
   const busy = sending || following
@@ -776,6 +873,15 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
             >
               {forking ? <Loader2 className="spin" size={16} /> : <GitFork size={16} />}{t('分叉')}
             </button>
+            <button
+              className="button button-secondary compact-button"
+              type="button"
+              onClick={regenerate}
+              disabled={regenerating || sending || following || activeId === null || messages.length === 0}
+              title={t('删掉最后一条用户消息之后的回复，原样重发那条消息')}
+            >
+              {regenerating ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}{t('重新生成')}
+            </button>
             {loading && <span className="settings-note">{t('正在读取会话')}</span>}
             {sessions.map(session => {
               const busyRow = sessionBusy === session.id
@@ -863,6 +969,11 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
           {chatError !== null && (
             <div className="inline-alert warning" role="alert">
               <div><strong>{chatError}</strong></div>
+              {failedSend !== null && (
+                <button className="button button-secondary compact-button" type="button" onClick={send}>
+                  <RefreshCw size={16} />{t('重试发送')}
+                </button>
+              )}
               {/401|403|登录/.test(chatError) && (
                 <button className="button button-secondary compact-button" type="button" onClick={onOpenTerminal}>
                   <SquareTerminal size={16} />{t('打开终端登录')}
@@ -969,10 +1080,54 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
                       ))}
                     </details>
                   )}
-                  {message.text === '' && message.attachments.length === 0 ? (
-                    t('(空消息)')
+                  {editing?.id === message.id && message.id !== '' ? (
+                    <span className="chat-edit">
+                      <textarea
+                        value={editing.draft}
+                        rows={3}
+                        onChange={event => setEditing({ id: message.id, draft: event.target.value })}
+                        aria-label={t('编辑消息')}
+                        autoFocus
+                      />
+                      <span className="chat-edit-actions">
+                        <button
+                          className="button button-primary compact-button"
+                          type="button"
+                          onClick={confirmEdit}
+                          disabled={busy}
+                        >
+                          {t('保存重发')}
+                        </button>
+                        <button
+                          className="button button-secondary compact-button"
+                          type="button"
+                          onClick={() => setEditing(null)}
+                        >
+                          {t('取消')}
+                        </button>
+                      </span>
+                    </span>
                   ) : (
-                    <span dangerouslySetInnerHTML={{ __html: renderMarkdown(message.text) }} />
+                    <>
+                      {message.text === '' && message.attachments.length === 0 ? (
+                        t('(空消息)')
+                      ) : (
+                        <span dangerouslySetInnerHTML={{ __html: renderMarkdown(message.text) }} />
+                      )}
+                      {message.role === 'user' && message.id !== '' && (
+                        <button
+                          className="chat-edit-button"
+                          type="button"
+                          onClick={() => {
+                            setEditing({ id: message.id, draft: message.text })
+                          }}
+                          disabled={busy}
+                          title={t('编辑后重发')}
+                        >
+                          {t('编辑')}
+                        </button>
+                      )}
+                    </>
                   )}
                   {message.attachments.length > 0 && (
                     <span className="chat-attachments">

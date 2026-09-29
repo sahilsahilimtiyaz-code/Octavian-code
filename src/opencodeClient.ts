@@ -474,6 +474,15 @@ export class OpenCodeClient {
     await this.request(`/session/${encodeURIComponent(sessionId)}/remove`, { method: 'DELETE' })
   }
 
+  async deleteMessage(sessionId: string, messageId: string): Promise<void> {
+    if (sessionId === '') throw new Error('会话 id 缺失')
+    if (messageId === '') throw new Error('消息标识缺失')
+    await this.request(
+      `/session/${encodeURIComponent(sessionId)}/message/${encodeURIComponent(messageId)}`,
+      { method: 'DELETE' },
+    )
+  }
+
   async sendMessage(sessionId: string, text: string, parts?: AgentChatPart[]): Promise<void> {
     if (sessionId === '') throw new Error('会话 id 缺失')
     if (parts !== undefined) {

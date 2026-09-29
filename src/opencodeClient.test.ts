@@ -308,6 +308,16 @@ describe('中止/分叉与审批直连', () => {
     await expect(client.deleteSession('')).rejects.toThrow()
   })
 
+  it('单条消息删除打到 message 子路径', async () => {
+    const calls: Array<[string, RequestInit]> = []
+    const client = clientWith(calls)
+    await client.deleteMessage('s1', 'm1')
+    expect(calls[0][0]).toBe('http://127.0.0.1:4097/session/s1/message/m1')
+    expect(calls[0][1].method).toBe('DELETE')
+    await expect(client.deleteMessage('', 'm1')).rejects.toThrow()
+    await expect(client.deleteMessage('s1', '')).rejects.toThrow()
+  })
+
   it('fork 带 messageID 并归一化新会话', async () => {
     vi.stubGlobal(
       'fetch',

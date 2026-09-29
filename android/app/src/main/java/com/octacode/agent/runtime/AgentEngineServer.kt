@@ -273,6 +273,23 @@ class AgentEngineServer(private val store: RuntimeStore) {
     }
 
     /**
+     * 单条消息删除：`DELETE /session/{sid}/message/{mid}`（SDK 路由确认）。
+     *
+     * 只删消息及其分段，不回滚文件改动——这正是“重新生成/编辑重发”的语义：
+     * 先删掉目标及之后的消息，再把（改过的）用户原文当新一轮发出去。
+     */
+    fun messageDelete(sessionId: String, messageId: String): String = synchronized(lock) {
+        if (!ID_PATTERN.matches(messageId)) {
+            throw RuntimeFailure("SETTINGS_INVALID", "消息标识无效")
+        }
+        return relay(
+            "DELETE",
+            "/session/" + requireSessionId(sessionId) + "/message/" + messageId,
+            null,
+        )
+    }
+
+    /**
      * 中止本轮运行：`POST /session/{id}/abort`，无请求体，成功返回布尔。
      *
      * 界面在发送中/跟随中把发送键换成停止键，点下即调这里并停掉轮询——

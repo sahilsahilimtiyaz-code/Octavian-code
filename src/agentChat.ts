@@ -35,6 +35,7 @@ export interface AgentChatTransport {
   createSession: (title: string, modelID?: string, variant?: string) => Promise<OpenCodeSession>
   renameSession: (sessionId: string, title: string) => Promise<void>
   deleteSession: (sessionId: string) => Promise<void>
+  deleteMessage: (sessionId: string, messageId: string) => Promise<void>
   listMessages: (sessionId: string) => Promise<ChatMessage[]>
   sendMessage: (sessionId: string, text: string, parts?: AgentChatPart[]) => Promise<void>
   stageAttachment: (fileName: string, mime: string, dataBase64: string) => Promise<StagedAttachment>
@@ -58,6 +59,7 @@ export function createNativeAgentChat(bridge: RuntimeBridge): AgentChatTransport
       bridge.agentChatCreate(title, modelID, variant).then(payload => parseSession(parseJsonPayload(payload.json))),
     renameSession: (sessionId, title) => bridge.agentSessionRename(sessionId, title).then(() => undefined),
     deleteSession: sessionId => bridge.agentSessionDelete(sessionId).then(() => undefined),
+    deleteMessage: (sessionId, messageId) => bridge.agentMessageDelete(sessionId, messageId).then(() => undefined),
     listMessages: sessionId =>
       bridge.agentChatHistory(sessionId).then(payload => parseMessageList(parseJsonPayload(payload.json))),
     sendMessage: (sessionId, text, parts) =>
