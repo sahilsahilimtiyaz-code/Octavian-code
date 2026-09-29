@@ -87,8 +87,8 @@ class CodexEngineServer(private val store: RuntimeStore) {
         val argv = RuntimeCommand.prootArgv(
             store,
             guestArgv,
-            // /dev+/proc 是地基绑定；seccomp 关掉走默认直通（与 opencode 侧同理）。
-            bindMounts = listOf(ProotBindMount("/dev"), ProotBindMount("/proc")) +
+            // /dev 是地基绑定；/proc 不绑（盖掉 PRoot 进程视图会导致访客 getcwd ENOSYS）。
+            bindMounts = listOf(ProotBindMount("/dev")) +
                 RuntimeMailbox(store).bindMounts(),
         )
         val logFile = File(store.harnessPidFile.parentFile, "codex-app-server.log")

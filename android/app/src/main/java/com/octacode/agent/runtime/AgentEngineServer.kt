@@ -697,10 +697,12 @@ class AgentEngineServer(private val store: RuntimeStore) {
         val delivery = RuntimeSecretPolicy.delivery(mapOf(SERVER_PASSWORD_ENV to password), 0)
         // 投递区绑定一起带进访客：附件落点（/mnt/inbox）对 opencode 可见，无需新挂载点。
         // 不可访问时返回空列表（已有语义），服务照常启动，只是附件功能不可用。
-        // /dev 与 /proc 是 PRoot 会话的地基（没有它们连随机数都没有，Bun 这类
-        // 运行时启动即崩溃）；seccomp 在 5.15 内核 + 自带 Ubuntu 用户态下只会
-        // 挡掉 JSC JIT 与新 glibc 的 syscall（如 clone3），关掉走默认直通。
-        val binds = listOf(ProotBindMount("/dev"), ProotBindMount("/proc")) +
+        // /dev 是地基绑定（urandom/null 没有它们很多运行时起不来）；
+        // /proc 刻意不绑：宿主 proc 会盖掉 PRoot 自己的进程视图，
+        // 真机实测它一绑上访客 getcwd() 就 ENOSYS（sh 连启动目录都读不到）。
+        // seccomp 在 5.15 内核 + 自带 Ubuntu 用户态下只会挡掉 JSC JIT 与
+        // 新 glibc 的 syscall（如 clone3），关掉走默认直通。
+        val binds = listOf(ProotBindMount("/dev")) +
             RuntimeMailbox(store).bindMounts()
         val argv = RuntimeCommand.prootArgv(
             store,
