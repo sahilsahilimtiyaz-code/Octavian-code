@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createCodexChat, createNativeAgentChat, pollUntilSettled } from './agentChat'
+import { createCodexChat, createNativeAgentChat, formatTokens, pollUntilSettled, sumUsage } from './agentChat'
 import { guessAttachmentMime, sanitizeAttachmentName } from './agentChat'
 import { parseMessageList, parseSession, parseSessionList } from './opencodeClient'
 import type { ChatMessage } from './opencodeClient'
@@ -213,5 +213,21 @@ describe('createCodexChat', () => {
     ])
     const stop = await chat.subscribeEvents(() => undefined)
     stop()
+  })
+})
+
+describe('用量汇总与格式化', () => {
+  it('sumUsage 累加带用量的消息，没有返回 null', () => {
+    expect(sumUsage([{ usage: { input: 10, output: 5 } }, {}, { usage: { input: 3, output: 0 } }])).toEqual({
+      input: 13,
+      output: 5,
+    })
+    expect(sumUsage([{}, {}])).toBeNull()
+  })
+
+  it('formatTokens 按千/百万缩写', () => {
+    expect(formatTokens(999)).toBe('999')
+    expect(formatTokens(1200)).toBe('1.2k')
+    expect(formatTokens(3400000)).toBe('3.4M')
   })
 })

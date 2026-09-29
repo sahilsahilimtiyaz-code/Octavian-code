@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  extractUsage,
   normalizeMessage,
   OpenCodeClient,
   parseAgentModels,
@@ -90,6 +91,21 @@ describe('normalizeMessage', () => {
       attachments: [],
       reasoning: ['先想想', '再想想'],
     })
+  })
+
+  it('用量提取容忍多种写法，凑不出来返回 null', () => {
+    expect(extractUsage({ inputTokens: { total: 10 }, outputTokens: { total: 5 } })).toEqual({ input: 10, output: 5 })
+    expect(extractUsage({ prompt_tokens: 100, completion_tokens: 50 })).toEqual({ input: 100, output: 50 })
+    expect(extractUsage({ usage: { tokens: { input: 7 } } })).toEqual({ input: 7, output: 0 })
+    expect(extractUsage({ text: 'hi' })).toBeNull()
+    expect(extractUsage(null)).toBeNull()
+    expect(extractUsage({ input: -1 })).toBeNull()
+  })
+
+  it('消息上的用量字段被收进 ChatMessage.usage', () => {
+    expect(
+      normalizeMessage({ id: 'm', role: 'assistant', parts: [], usage: { prompt_tokens: 3, completion_tokens: 1 } }),
+    ).toEqual({ id: 'm', role: 'assistant', text: '', attachments: [], reasoning: [], usage: { input: 3, output: 1 } })
   })
 })
 

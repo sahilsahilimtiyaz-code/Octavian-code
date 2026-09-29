@@ -1,9 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { GitFork, Loader2, Plus, Power, RefreshCw, SendHorizontal, Square } from 'lucide-react'
-import {
-  createCodexChat,
-  pollCodexUntilSettled,
-} from '../agentChat'
+import { createCodexChat, formatTokens, pollCodexUntilSettled } from '../agentChat'
+import { extractUsage } from '../opencodeClient'
 import { renderMarkdown } from '../markdown'
 import { t } from '../i18n'
 import type { CodexModelOption, CodexThread } from '../codexClient'
@@ -52,7 +50,7 @@ export function CodexChatPanel({ bridge, installed, onInstall }: CodexChatPanelP
   const [composer, setComposer] = useState('')
   const [models, setModels] = useState<CodexModelOption[]>([])
   const [selectedModel, setSelectedModel] = useState('')
-  const [usage, setUsage] = useState<string | null>(null)
+  const [usage, setUsage] = useState<{ input: number; output: number } | null>(null)
   const cancelled = useRef(false)
 
   useEffect(() => {
@@ -176,11 +174,8 @@ export function CodexChatPanel({ bridge, installed, onInstall }: CodexChatPanelP
           setFollowing(false)
           setActiveTurnId(null)
         } else if (event.method === 'thread/tokenUsage/updated') {
-          try {
-            setUsage(JSON.stringify(event.params))
-          } catch {
-            // 用量展示失败不影响对话。
-          }
+          const parsed = extractUsage(event.params)
+          if (parsed !== null && !cancelled.current) setUsage(parsed)
         } else if (event.method === 'turn/started' || event.method.startsWith('item/')) {
           if (activeId !== null && (sending || following)) {
             void transport.readThread(activeId).then(
@@ -446,7 +441,11 @@ export function CodexChatPanel({ bridge, installed, onInstall }: CodexChatPanelP
               <p className="settings-note">{t('还没有消息，在下面输入第一句话。')}</p>
             )}
           </section>
-          {usage !== null && <p className="settings-note">{usage}</p>}
+          {usage !== null && (
+            <p className="settings-note">
+              {t('本会话用量：输入 ')}{formatTokens(usage.input)}{t(' · 输出 ')}{formatTokens(usage.output)}
+            </p>
+          )}
 
           <div className={busy ? 'chat-composer busy' : 'chat-composer'}>
             <input

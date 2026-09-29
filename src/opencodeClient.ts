@@ -23,6 +23,8 @@ export interface ChatMessage {
   attachments: ChatAttachment[]
   /** 思考过程分段：可折叠展示，不参与正文拼接。 */
   reasoning: string[]
+  /** token 用量（有才有）：输入/输出条数，界面累加展示。 */
+  usage?: { input: number; output: number }
   /** 工具调用摘要（Codex 侧有，OpenCode 侧暂无）：展示用。 */
   tools?: string[]
 }
@@ -32,6 +34,61 @@ export interface ChatAttachment {
   kind: 'file' | 'image'
   mime: string
   url: string
+}
+
+function asNonNegativeInt(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null
+  return Math.floor(value)
+}
+
+/**
+ * token 用量提取：服务端在不同版本里有好几种写法，全部容忍——
+ * `{inputTokens:{total},outputTokens:{total}}`、`{prompt_tokens,completion_tokens}`、
+ * `{tokens:{input,output}}`、`{input,output}`。凑不出一对非空数字就返回 null，
+ * 界面直接不画用量行，绝不拿 0 冒充。
+ */
+export function extractUsage(value: unknown): { input: number; output: number } | null {
+  let record: Record<string, unknown>
+  try {
+    record = asRecord(value, '用量')
+  } catch {
+    return null
+  }
+  const group = (source: Record<string, unknown>, key: string): Record<string, unknown> | null => {
+    try {
+      return asRecord(source[key], '用量分组')
+    } catch {
+      return null
+    }
+  }
+  // 用量可能在顶层，也可能包在 usage/tokens/inputTokens/outputTokens 任一层里。
+  const layers = [record, group(record, 'usage'), group(record, 'tokens')].filter(
+    (layer): layer is Record<string, unknown> => layer !== null,
+  )
+  const readInt = (source: Record<string, unknown>, keys: string[]): number | null => {
+    for (const key of keys) {
+      const hit = asNonNegativeInt(source[key])
+      if (hit !== null) return hit
+    }
+    return null
+  }
+  let input: number | null = null
+  let output: number | null = null
+  for (const layer of layers) {
+    input ??= readInt(layer, ['prompt_tokens', 'input_tokens']) ?? readInt(layer, ['input', 'inputTokens'])
+    output ??= readInt(layer, ['completion_tokens', 'output_tokens']) ?? readInt(layer, ['output', 'outputTokens'])
+    const inputGroup = group(layer, 'inputTokens')
+    if (inputGroup !== null) input ??= readInt(inputGroup, ['total'])
+    const outputGroup = group(layer, 'outputTokens')
+    if (outputGroup !== null) output ??= readInt(outputGroup, ['total'])
+    const tokensGroup = group(layer, 'tokens')
+    if (tokensGroup !== null) {
+      input ??= readInt(tokensGroup, ['input', 'inputTokens'])
+      output ??= readInt(tokensGroup, ['output', 'outputTokens'])
+    }
+  }
+  if (input === null && output === null) return null
+  return { input: input ?? 0, output: output ?? 0 }
 }
 
 export interface OpenCodeStreamEvent {
@@ -101,7 +158,7 @@ export function normalizeMessage(value: unknown): ChatMessage | null {
       })
     }
   }
-  return { id: asString(item.id ?? ''), role, text: texts.join(''), attachments, reasoning }
+  return { id: asString(item.id ?? ''), role, text: texts.join(''), attachments, reasoning, usage: extractUsage(item) ?? undefined }
 }
 
 /** 中继原文入口：字符串先按 JSON 解析，再走同一套归一化（非法直接抛错）。 */

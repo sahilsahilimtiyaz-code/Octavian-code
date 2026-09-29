@@ -297,3 +297,36 @@ export function saveDefaultVariant(variant: string): void {
     // 存不下就用本次会话的值，界面不为此报错。
   }
 }
+
+/** token 条数格式化：1200 → 1.2k，3400000 → 3.4M。 */
+export function formatTokens(count: number): string {
+  if (count >= 1_000_000) {
+    const value = Math.round((count / 1_000_000) * 10) / 10
+    return `${value}M`
+  }
+  if (count >= 1000) {
+    const value = Math.round((count / 1000) * 10) / 10
+    return `${value}k`
+  }
+  return String(count)
+}
+
+/**
+ * 会话用量汇总：把带 usage 的消息累加起来；一条都没有就返回 null，
+ * 界面直接不画用量行（不用 0 冒充）。
+ */
+export function sumUsage(messages: Array<{ usage?: { input: number; output: number } }>): {
+  input: number
+  output: number
+} | null {
+  let input = 0
+  let output = 0
+  let found = false
+  for (const message of messages) {
+    if (message.usage === undefined) continue
+    found = true
+    input += message.usage.input
+    output += message.usage.output
+  }
+  return found ? { input, output } : null
+}

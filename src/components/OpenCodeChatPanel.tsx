@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import {
   Check,
   FileText,
@@ -20,6 +21,7 @@ import {
   ATTACHMENT_MAX_BYTES,
   ATTACHMENT_MAX_PER_MESSAGE,
   createNativeAgentChat,
+  formatTokens,
   guessAttachmentMime,
   pollUntilSettled,
   readDefaultModelId,
@@ -27,6 +29,7 @@ import {
   sanitizeAttachmentName,
   saveDefaultModelId,
   saveDefaultVariant,
+  sumUsage,
 } from '../agentChat'
 import { renderMarkdown } from '../markdown'
 import { t } from '../i18n'
@@ -98,6 +101,16 @@ function AttachmentView({ attachment, thumb }: { attachment: ChatAttachment; thu
       {attachment.kind === 'image' ? <Image size={14} /> : <FileText size={14} />}
       {name}
     </span>
+  )
+}
+
+function usageSummary(messages: ChatMessage[]): ReactNode {
+  const usage = sumUsage(messages)
+  if (usage === null) return null
+  return (
+    <p className="settings-note">
+      {t('本会话用量：输入 ')}{formatTokens(usage.input)}{t(' · 输出 ')}{formatTokens(usage.output)}
+    </p>
   )
 }
 export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall, onOpenTerminal }: OpenCodeChatPanelProps) {
@@ -1069,6 +1082,7 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
             {activeId !== null && sessionModels[activeId] !== undefined && (
               <p className="settings-note">{t('当前会话模型：')}{sessionModels[activeId]}</p>
             )}
+            {usageSummary(messages)}
             {messages.map((message, index) => (
               <div key={message.id !== '' ? message.id : `m${index}`} className={message.role === 'user' ? 'chat-message user message-in' : 'chat-message assistant message-in'}>
                 <div className="chat-bubble">
