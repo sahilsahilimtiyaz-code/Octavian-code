@@ -671,6 +671,14 @@ class AgentEngineServer(private val store: RuntimeStore) {
         if (!File(store.currentRoot, "usr/local/bin/opencode").isFile) {
             throw RuntimeFailure("AGENT_ENGINE_MISSING", "运行时未内置 opencode，请先安装运行时")
         }
+        // 预检：ProcessBuilder 起不来时只抛裸 IOException，把真因（不可执行、
+        // 缺文件）在这里先说清楚，免得用户拿着一句“启动失败”干瞪眼。
+        if (!store.launchRunnerFile.isFile) {
+            throw RuntimeFailure("RUNNER_UNAVAILABLE", "APK 未包含当前架构的受信任运行器")
+        }
+        if (!store.launchRunnerFile.canExecute()) {
+            throw RuntimeFailure("RUNNER_UNAVAILABLE", "本机运行器不可执行，请重装应用后重试")
+        }
         val password = newPassword()
         serverPassword = password
         writeEnvFile(password)
@@ -692,14 +700,19 @@ class AgentEngineServer(private val store: RuntimeStore) {
             secrets = delivery,
         )
         val logFile = File(store.harnessPidFile.parentFile, "opencode-serve.log")
+        logFile.parentFile?.mkdirs()
         val started = try {
             ProcessBuilder(argv)
                 .redirectErrorStream(true)
                 .redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
                 .start()
-        } catch (_: Throwable) {
+        } catch (error: Throwable) {
+            // start() 本身抛错（最常见是系统拒绝执行）：把系统原话带上，
+            // 否则“启动失败”四个字永远定位不到是没权限、没文件还是超限。
+            // 刚写的密码文件一并清掉：没跑起来的服务不配留下密码。
             store.deleteRuntimeSecrets()
-            throw RuntimeFailure("AGENT_ENGINE_START_FAILED", "Agent 服务进程启动失败")
+            val cause = error.message?.takeIf { it.isNotBlank() } ?: error.javaClass.simpleName
+            throw RuntimeFailure("AGENT_ENGINE_START_FAILED", "Agent 服务进程启动失败：$cause")
         }
         process = started
         port = targetPort

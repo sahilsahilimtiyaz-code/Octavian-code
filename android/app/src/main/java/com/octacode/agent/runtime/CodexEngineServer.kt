@@ -54,6 +54,13 @@ class CodexEngineServer(private val store: RuntimeStore) {
         if (!File(store.currentRoot, "usr/local/bin/codex").isFile) {
             throw RuntimeFailure("AGENT_ENGINE_MISSING", "运行时未内置 codex，请先安装运行时")
         }
+        // 预检同 opencode 侧：起不来时先说清是运行器的问题还是系统拒绝。
+        if (!store.launchRunnerFile.isFile) {
+            throw RuntimeFailure("RUNNER_UNAVAILABLE", "APK 未包含当前架构的受信任运行器")
+        }
+        if (!store.launchRunnerFile.canExecute()) {
+            throw RuntimeFailure("RUNNER_UNAVAILABLE", "本机运行器不可执行，请重装应用后重试")
+        }
         val attempts = listOf(
             listOf("/usr/local/bin/codex", "app-server", "--listen", "stdio://"),
             listOf("/usr/local/bin/codex", "app-server"),
@@ -81,12 +88,14 @@ class CodexEngineServer(private val store: RuntimeStore) {
             bindMounts = RuntimeMailbox(store).bindMounts(),
         )
         val logFile = File(store.harnessPidFile.parentFile, "codex-app-server.log")
+        logFile.parentFile?.mkdirs()
         val launched = try {
             ProcessBuilder(argv)
                 .redirectError(ProcessBuilder.Redirect.appendTo(logFile))
                 .start()
-        } catch (_: Throwable) {
-            throw RuntimeFailure("AGENT_ENGINE_START_FAILED", "Codex 服务进程启动失败")
+        } catch (error: Throwable) {
+            val cause = error.message?.takeIf { it.isNotBlank() } ?: error.javaClass.simpleName
+            throw RuntimeFailure("AGENT_ENGINE_START_FAILED", "Codex 服务进程启动失败：$cause")
         }
         val output = launched.inputStream.bufferedReader(Charsets.UTF_8)
         val input = launched.outputStream.bufferedWriter(Charsets.UTF_8)
