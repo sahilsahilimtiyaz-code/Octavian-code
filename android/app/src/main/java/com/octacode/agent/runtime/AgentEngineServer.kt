@@ -705,10 +705,20 @@ class AgentEngineServer(private val store: RuntimeStore) {
         )
         val logFile = File(store.harnessPidFile.parentFile, "opencode-serve.log")
         logFile.parentFile?.mkdirs()
+        // 启动环境与 Harness 路径完全一致：清空继承环境后铺 hostEnvironment。
+        // 之前这里直接继承应用进程环境，既没有 PROOT_TMP_DIR（PRoot 连
+        // 临时目录都建不出来就以 permission denied 暴毙），也没有
+        // PROOT_LOADER，还漏着宿主的 LD_LIBRARY_PATH——这正是真机上
+        // “进程意外退出”的根因。
         val started = try {
             ProcessBuilder(argv)
+                .directory(store.currentRoot)
                 .redirectErrorStream(true)
                 .redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
+                .also { builder ->
+                    builder.environment().clear()
+                    builder.environment().putAll(RuntimeCommand.hostEnvironment(store.hostContext, store))
+                }
                 .start()
         } catch (error: Throwable) {
             // start() 本身抛错（最常见是系统拒绝执行）：把系统原话带上，

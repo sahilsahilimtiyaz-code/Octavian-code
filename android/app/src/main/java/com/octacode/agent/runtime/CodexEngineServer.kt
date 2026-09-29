@@ -91,9 +91,16 @@ class CodexEngineServer(private val store: RuntimeStore) {
         )
         val logFile = File(store.harnessPidFile.parentFile, "codex-app-server.log")
         logFile.parentFile?.mkdirs()
+        // 与 Harness 路径一致的启动环境（见 AgentEngineServer 注释）：
+        // 不清空继承环境，PRoot 一样起不来。
         val launched = try {
             ProcessBuilder(argv)
+                .directory(store.currentRoot)
                 .redirectError(ProcessBuilder.Redirect.appendTo(logFile))
+                .also { builder ->
+                    builder.environment().clear()
+                    builder.environment().putAll(RuntimeCommand.hostEnvironment(store.hostContext, store))
+                }
                 .start()
         } catch (error: Throwable) {
             val cause = error.message?.takeIf { it.isNotBlank() } ?: error.javaClass.simpleName

@@ -21,6 +21,8 @@ import java.nio.file.StandardOpenOption
 
 class RuntimeStore(context: Context) {
     private val appContext = context.applicationContext
+    /** 宿主环境组装（PRoot 临时目录等）需要它：同模块内可见，不出应用进程。 */
+    internal val hostContext: Context get() = appContext
     private val preferences: SharedPreferences = appContext.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
     private val credentialCipher = RuntimeCredentialCipher()
 
