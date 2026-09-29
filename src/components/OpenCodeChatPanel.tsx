@@ -756,9 +756,23 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
       setChatError(t('没有可分叉的用户消息。'))
       return
     }
+    forkFrom(lastUser.id)
+  }
+
+  /**
+   * 从任意一条消息分叉：原会话保留到分叉点，新会话接管继续。
+   * 无服务端 id 的消息不显示入口（见气泡），这里再拦一道。
+   */
+  const forkFrom = (messageId: string) => {
+    if (activeId === null || forking || sending || following) return
+    if (messageId === '') {
+      setChatError(t('该消息缺少标识，无法分叉。'))
+      return
+    }
+    const sessionId = activeId
     setForking(true)
     setChatError(null)
-    void transport.forkSession(activeId, lastUser.id).then(
+    void transport.forkSession(sessionId, messageId).then(
       session => {
         if (cancelled.current) return
         setForking(false)
@@ -1253,18 +1267,31 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
                       ) : (
                         <span dangerouslySetInnerHTML={{ __html: renderMarkdown(message.text) }} />
                       )}
-                      {message.role === 'user' && message.id !== '' && (
-                        <button
-                          className="chat-edit-button"
-                          type="button"
-                          onClick={() => {
-                            setEditing({ id: message.id, draft: message.text })
-                          }}
-                          disabled={busy}
-                          title={t('编辑后重发')}
-                        >
-                          {t('编辑')}
-                        </button>
+                      {message.id !== '' && (
+                        <span className="chat-message-actions">
+                          {message.role === 'user' && (
+                            <button
+                              className="chat-edit-button"
+                              type="button"
+                              onClick={() => {
+                                setEditing({ id: message.id, draft: message.text })
+                              }}
+                              disabled={busy}
+                              title={t('编辑后重发')}
+                            >
+                              {t('编辑')}
+                            </button>
+                          )}
+                          <button
+                            className="chat-edit-button"
+                            type="button"
+                            onClick={() => forkFrom(message.id)}
+                            disabled={busy || forking}
+                            title={t('从这条消息分叉出新会话')}
+                          >
+                            {t('分叉')}
+                          </button>
+                        </span>
                       )}
                     </>
                   )}

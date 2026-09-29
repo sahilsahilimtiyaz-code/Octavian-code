@@ -2043,6 +2043,21 @@ button:disabled {
   align-self: flex-end;
 }
 
+/* 气泡操作行：编辑 / 分叉并排，不抢正文视觉。 */
+.chat-message-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 6px;
+}
+
+.chat-message-actions .chat-edit-button {
+  margin-top: 0;
+}
+
+.chat-message.user .chat-message-actions {
+  justify-content: flex-end;
+}
+
 /* 聊天消息里的 Markdown：只管排版，不管颜色体系（跟随气泡变量）。 */
 .chat-bubble p {
   margin: 0 0 8px;
