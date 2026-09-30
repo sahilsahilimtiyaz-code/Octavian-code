@@ -8,6 +8,23 @@ def envBuildValue = { String name ->
     return '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"'
 }
 
+// 构建身份：短 SHA 写进 BuildConfig，设置页的构建信息 chip 直接展示，
+// “我装的是哪一版”在应用内就有答案，不用再去对 CI run 号。
+// 取不到（非 git 目录、git 不可用）就填 unknown：身份缺失不能挡构建。
+def gitRevision = { ->
+    try {
+        def stdout = new ByteArrayOutputStream()
+        exec {
+            commandLine 'git', 'rev-parse', '--short', 'HEAD'
+            workingDir rootDir
+            standardOutput stdout
+        }
+        return stdout.toString().trim().take(12)
+    } catch (Exception ignored) {
+        return 'unknown'
+    }
+}
+
 // 团队统一签名（debug/release 共用）：防止不同开发者或 CI 用各自密钥签名，
 // 导致设备覆盖安装时报「应用签名与已安装版本不一致」。密钥库与密码均不入库：
 //   - 本地开发：android/keystore.properties（由团队负责人分发，模板见 keystore.properties.example）
@@ -203,6 +220,7 @@ android {
 
         buildConfigField 'String', 'DEFAULT_MANIFEST_URL', envBuildValue('DSH_RUNTIME_MANIFEST_URL')
         buildConfigField 'String', 'DEFAULT_MANIFEST_SHA256', envBuildValue('DSH_RUNTIME_MANIFEST_SHA256')
+        buildConfigField 'String', 'GIT_SHA', '"' + gitRevision() + '"'
 
         ndk {
             abiFilters 'arm64-v8a'

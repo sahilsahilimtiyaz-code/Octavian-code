@@ -136,6 +136,49 @@ describe('诊断与日志', () => {
     expect(document.querySelector('.harness-log-output')).toBeNull()
   })
 
+  it('诊断页顶部展示构建身份，报障先看这一行', async () => {
+    render(<App />)
+    await waitFor(() => expect(bridge.openHarness).toHaveBeenCalledTimes(1))
+
+    await openSettingsPage('诊断与日志')
+    expect(await screen.findByText('0.2.0 (22) · test')).toBeVisible()
+  })
+
+  it('引擎日志折叠时不读取，展开后按引擎读取并可切换', async () => {
+    bridge.getAgentLog.mockImplementation((engine: string) =>
+      Promise.resolve({
+        engine,
+        available: true,
+        text: engine === 'opencode' ? 'opencode log line' : 'codex log line',
+        maxBytes: 8 * 1024,
+      }),
+    )
+    render(<App />)
+    await waitFor(() => expect(bridge.openHarness).toHaveBeenCalledTimes(1))
+
+    await openSettingsPage('诊断与日志')
+    const toggle = await screen.findByRole('button', { name: /引擎日志（最近 8 KB）/ })
+    expect(bridge.getAgentLog).not.toHaveBeenCalled()
+
+    fireEvent.click(toggle)
+    await waitFor(() => expect(bridge.getAgentLog).toHaveBeenCalledWith('opencode', { maxBytes: 8 * 1024 }))
+    expect(await screen.findByText('opencode log line')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Codex' }))
+    await waitFor(() => expect(bridge.getAgentLog).toHaveBeenCalledWith('codex', { maxBytes: 8 * 1024 }))
+    expect(await screen.findByText('codex log line')).toBeVisible()
+  })
+
+  it('引擎日志不可用时如实提示，不编造内容', async () => {
+    bridge.getAgentLog.mockResolvedValue({ engine: 'opencode', available: false, text: '', maxBytes: 8 * 1024 })
+    render(<App />)
+    await waitFor(() => expect(bridge.openHarness).toHaveBeenCalledTimes(1))
+
+    await openSettingsPage('诊断与日志')
+    fireEvent.click(await screen.findByRole('button', { name: /引擎日志（最近 8 KB）/ }))
+    expect(await screen.findByText('当前没有可读取的引擎日志（服务没起过）')).toBeVisible()
+  })
+
   it('展开后可用一键复制运行日志，复用系统剪贴板', async () => {
     const payload = 'Error: TOOL_CALL_FAILED\n    at handler (dsh.js:42:7)'
     bridge.getHarnessLog.mockResolvedValue({ available: true, text: payload })

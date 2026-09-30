@@ -44,6 +44,8 @@ import {
   validateAgentChatTitle,
   validateAgentEngineServerState,
   validateAgentEvent,
+  validateAgentLog,
+  validateAgentLogEngine,
   validateAgentMessageId,
   validateAgentModelId,
   validateAgentName,
@@ -71,6 +73,7 @@ import {
   validateDiagnosticLogExport,
   validateDiagnosticLogState,
   validateDiagnosticLogText,
+  validateAppVersion,
   validateHarnessLog,
   validateKeepAliveState,
   validateMailboxExportResult,
@@ -131,6 +134,8 @@ interface NativeRuntimePlugin {
   addStorageDirectory(): Promise<unknown>
   removeStorageDirectory(options: { path: string }): Promise<unknown>
   getHarnessLog(options: { maxBytes?: number }): Promise<unknown>
+  getAgentLog(options: { engine: string; maxBytes?: number }): Promise<unknown>
+  getAppVersion(): Promise<unknown>
   runRuntimeSelfCheck(options: { operation: SelfCheckOperation }): Promise<unknown>
   runtimeVersions(): Promise<unknown>
   switchRuntimeVersion(options: { target: string }): Promise<unknown>
@@ -283,6 +288,11 @@ function createNativeBridge(): RuntimeBridge {
       .then(validateStorageDirsState),
     // 窗口参数由原生侧收敛到受控档位；这里只负责透传用户选择的字节数。
     getHarnessLog: options => NativeRuntime.getHarnessLog({ maxBytes: options?.maxBytes }).then(validateHarnessLog),
+    // 引擎日志：同窗口机制，来源二选一；构建身份直接透传校验。
+    getAgentLog: (engine, options) => NativeRuntime
+      .getAgentLog({ engine: validateAgentLogEngine(engine), maxBytes: options?.maxBytes })
+      .then(validateAgentLog),
+    getAppVersion: () => NativeRuntime.getAppVersion().then(validateAppVersion),
     // 操作类型只允许 check / repair：未知取值在进入原生侧之前就被拒绝。
     runRuntimeSelfCheck: operation => NativeRuntime
       .runRuntimeSelfCheck({ operation: validateSelfCheckOperation(operation) })

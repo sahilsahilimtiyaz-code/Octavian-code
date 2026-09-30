@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { GitFork, Loader2, Plus, Power, RefreshCw, SendHorizontal, Square } from 'lucide-react'
-import { createCodexChat, formatTokens, pollCodexUntilSettled } from '../agentChat'
+import { createCodexChat, errorMessageWithHint, formatTokens, pollCodexUntilSettled } from '../agentChat'
 import { extractUsage } from '../opencodeClient'
 import { renderMarkdown } from '../markdown'
 import { t } from '../i18n'
@@ -16,7 +16,7 @@ interface CodexChatPanelProps {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error && error.message !== '' ? error.message : t('操作失败，请重试。')
+  return errorMessageWithHint(t('操作失败，请重试。'), error)
 }
 
 /**

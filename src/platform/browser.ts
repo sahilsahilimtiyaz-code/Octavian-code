@@ -10,6 +10,8 @@ import type {
   DiagnosticLogState,
   DiagnosticLogText,
   HarnessLog,
+  AgentLog,
+  AppVersion,
   KeepAliveState,
   ListenerHandle,
   MailboxState,
@@ -337,6 +339,15 @@ export function createBrowserBridge(): RuntimeBridge {
       text: '',
       maxBytes: options?.maxBytes === 64 * 1024 || options?.maxBytes === 256 * 1024 ? options.maxBytes : 8 * 1024,
     }),
+    // 引擎日志同理：没有进程就没有输出；构建身份在预览里按未知版本返回。
+    getAgentLog: (engine): Promise<AgentLog> => Promise.resolve({
+      engine,
+      available: false,
+      text: '',
+      maxBytes: 8 * 1024,
+    }),
+    getAppVersion: (): Promise<AppVersion> =>
+      Promise.resolve({ versionName: 'preview', versionCode: 0, gitSha: 'preview' }),
     // 浏览器预览没有访客运行时，也就没有可自检的链路：如实拒绝，不编造一份「全部正常」的结果。
     runRuntimeSelfCheck: (operation: SelfCheckOperation): Promise<SelfCheckReport> => {
       validateSelfCheckOperation(operation)

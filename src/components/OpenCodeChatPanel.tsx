@@ -21,6 +21,7 @@ import {
   ATTACHMENT_MAX_BYTES,
   ATTACHMENT_MAX_PER_MESSAGE,
   createNativeAgentChat,
+  errorMessageWithHint,
   formatTokens,
   guessAttachmentMime,
   pollUntilSettled,
@@ -67,7 +68,8 @@ interface StagedFile {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error && error.message !== '' ? error.message : t('操作失败，请重试。')
+  // 原文 + 码对应的下一步（agentErrorHint）：横幅里一次看全，不用来回翻。
+  return errorMessageWithHint(t('操作失败，请重试。'), error)
 }
 
 function readFileAsBase64(file: File): Promise<string> {

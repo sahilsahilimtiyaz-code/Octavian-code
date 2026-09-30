@@ -14,6 +14,9 @@ import {
   validateAgentChatText,
   validateAgentChatTitle,
   validateAgentEngineServerState,
+  validateAgentLog,
+  validateAgentLogEngine,
+  validateAppVersion,
   validateAgentEvent,
   validateAgentMessageId,
   validateAgentModelId,
@@ -992,6 +995,20 @@ describe('Agent 聊天与附件校验', () => {
     expect(validateAgentName('build')).toBe('build')
     expect(() => validateAgentName('a/b')).toThrow('代理名称无效')
     expect(() => validateAgentName('')).toThrow('代理名称无效')
+  })
+
+  it('引擎日志与构建身份形态', () => {
+    expect(validateAgentLogEngine('opencode')).toBe('opencode')
+    expect(() => validateAgentLogEngine('dsh')).toThrow('引擎日志来源无效')
+    expect(
+      validateAgentLog({ engine: 'codex', available: true, text: 'x', maxBytes: 8 * 1024 }),
+    ).toEqual({ engine: 'codex', available: true, text: 'x', maxBytes: 8 * 1024 })
+    expect(() => validateAgentLog({ engine: 'opencode', available: true, text: 'x' })).toThrow()
+    expect(
+      validateAppVersion({ versionName: '0.2.0', versionCode: 22, gitSha: 'abc123' }),
+    ).toEqual({ versionName: '0.2.0', versionCode: 22, gitSha: 'abc123' })
+    expect(() => validateAppVersion({ versionName: '', versionCode: 22, gitSha: 'x' })).toThrow()
+    expect(() => validateAppVersion({ versionName: '0.2.0', versionCode: -1, gitSha: 'x' })).toThrow()
   })
 
   it('审批动作只认服务端枚举，问答答案只认选项标签数组', () => {

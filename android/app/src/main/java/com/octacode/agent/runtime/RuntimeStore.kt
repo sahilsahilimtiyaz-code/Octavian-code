@@ -60,6 +60,21 @@ class RuntimeStore(context: Context) {
     val codexEnginePidFile = File(appContext.noBackupFilesDir, "codex-engine.pid")
 
     /**
+     * 引擎进程日志文件：opencode-serve.log / codex-app-server.log。
+     *
+     * 界面排障用（getAgentLog 按窗口读尾部）。engineId 只认两个字面量，
+     * 传别的直接抛错——路径绝不允许由调用方拼接。
+     */
+    fun agentLogFile(engineId: String): File {
+        val name = when (engineId) {
+            "opencode" -> "opencode-serve.log"
+            "codex" -> "codex-app-server.log"
+            else -> throw RuntimeFailure("SETTINGS_INVALID", "未知引擎")
+        }
+        return File(appContext.noBackupFilesDir, name)
+    }
+
+    /**
      * 应用自诊断日志。
      *
      * 放在 store 上的原因：运行时各组件（状态机、supervisor、插件、前台服务）都持有 store，

@@ -1261,6 +1261,85 @@ class MobileRuntimePlugin : Plugin() {
 
     /**
      * 权限：应用内桥接。
+     * 引擎进程日志（opencode-serve.log / codex-app-server.log）的受控窗口读取。
+     *
+     * 隐私边界与 getHarnessLog 一致：可能包含会话内容，只回传当前界面，
+     * 不写入诊断日志、不导出。文件不存在（服务没起过）如实返回 available=false。
+     */
+    @PluginMethod
+    fun getAgentLog(call: PluginCall) {
+        resolveWhileActive(call) {
+            val engine = call.getString("engine")?.trim().orEmpty()
+            val window = clampHarnessTailBytes(call.getInt("maxBytes"))
+            val file = try {
+                controller.store.agentLogFile(engine)
+            } catch (failure: RuntimeFailure) {
+                throw failure
+            }
+            val text = readFileTailBytes(file, window)
+            JSObject()
+                .put("engine", engine)
+                .put("available", text != null)
+                .put("text", text.orEmpty())
+                .put("maxBytes", window)
+        }
+    }
+
+    /**
+     * 权限：应用内桥接。
+     * 构建身份：versionName / versionCode / git 短 SHA。
+     *
+     * 给设置页的构建信息 chip 用——“我装的是哪一版”在应用内就有答案。
+     * 全是构建期常量，不含任何运行时状态与凭据。
+     */
+    @PluginMethod
+    fun getAppVersion(call: PluginCall) {
+        resolveWhileActive(call) {
+            JSObject()
+                .put("versionName", com.octacode.agent.BuildConfig.VERSION_NAME)
+                .put("versionCode", com.octacode.agent.BuildConfig.VERSION_CODE)
+                .put("gitSha", com.octacode.agent.BuildConfig.GIT_SHA)
+        }
+    }
+
+    /**
+     * 读文件末尾至多 maxBytes 个 UTF-8 字节，落在字符边界上。
+     *
+     * 大日志（服务跑几天就是 MB 级）不能整份读进内存：按长度定位后只读尾部。
+     * 与 HarnessOutputTail.utf8TailWithin 同一语义（跳过首字节的续字节），
+     * 这里独立实现是因为输入是字节数组而不是字符串。
+     */
+    private fun readFileTailBytes(file: File, maxBytes: Int): String? {
+        if (maxBytes <= 0) return ""
+        return try {
+            java.io.RandomAccessFile(file, "r").use { access ->
+                val length = access.length()
+                if (length <= 0L) return ""
+                val start = maxOf(0L, length - maxBytes)
+                access.seek(start)
+                val size = (length - start).toInt()
+                val bytes = ByteArray(size)
+                var read = 0
+                while (read < size) {
+                    val count = access.read(bytes, read, size - read)
+                    if (count < 0) break
+                    read += count
+                }
+                var offset = 0
+                while (offset < read && (bytes[offset].toInt() and 0xC0) == 0x80) {
+                    offset += 1
+                }
+                String(bytes, offset, read - offset, Charsets.UTF_8)
+            }
+        } catch (_: java.io.FileNotFoundException) {
+            null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * 权限：应用内桥接。
      * 只返回诊断日志的状态（开关、保留天数、文件数、总字节数、最近记录时间），
      * 不回传任何日志内容。
      */

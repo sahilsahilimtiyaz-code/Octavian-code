@@ -555,6 +555,26 @@ export interface HarnessLog {
 }
 
 /**
+ * Agent 引擎日志：opencode-serve.log / codex-app-server.log 的受控窗口。
+ * text 可能包含会话内容——只在设备界面展示，不进导出（与运行日志同一边界）。
+ */
+export type AgentLogEngine = 'opencode' | 'codex'
+
+export interface AgentLog {
+  engine: AgentLogEngine
+  available: boolean
+  text: string
+  maxBytes: number
+}
+
+/** 构建身份：展示用，“我装的是哪一版”在应用内就有答案。 */
+export interface AppVersion {
+  versionName: string
+  versionCode: number
+  gitSha: string
+}
+
+/**
  * 应用内查看诊断日志的结果。
  *
  * [text] 是受控字段组成的尾部窗口（见 `docs/诊断日志.md`：只有事件名、级别、
@@ -745,6 +765,13 @@ export interface RuntimeBridge {
    * [maxBytes] 由原生侧收敛到受控档位（8 / 64 / 256 KB），缺省 8 KB。
    */
   getHarnessLog: (options?: { maxBytes?: number }) => Promise<HarnessLog>
+  /**
+   * 引擎进程日志：opencode / codex 二选一，与运行日志同一套窗口与隐私边界。
+   * 文件不存在（服务没起过）返回 available=false。
+   */
+  getAgentLog: (engine: AgentLogEngine, options?: { maxBytes?: number }) => Promise<AgentLog>
+  /** 构建身份：versionName / versionCode / git 短 SHA，展示用。 */
+  getAppVersion: () => Promise<AppVersion>
   /**
    * 运行时自检：`check` 逐项检查运行时链路，`repair` 修复权限位与缺失目录。
    *

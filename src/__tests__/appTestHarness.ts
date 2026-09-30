@@ -85,6 +85,8 @@ export const bridge = {
   exportMailbox: vi.fn(),
   requestNotificationPermission: vi.fn(),
   getHarnessLog: vi.fn(),
+  getAgentLog: vi.fn(),
+  getAppVersion: vi.fn(),
   runRuntimeSelfCheck: vi.fn(),
   // 运行时版本管理（双槽）：界面进「运行环境」页就会读一次列表，
   // 桩必须先在，否则那次 effect 会抛错并整棵树卸载（同上一条注释里的坑）。
@@ -296,6 +298,8 @@ export function beforeEachAppTest(): void {
   bridge.openAllFilesAccessSettings.mockResolvedValue({ supported: true, granted: false })
   bridge.requestNotificationPermission.mockResolvedValue({ granted: true, supported: true })
   bridge.getHarnessLog.mockResolvedValue({ available: true, text: 'Error: tool call failed\n    at run (dsh.js:1:1)', maxBytes: 8 * 1024 })
+  bridge.getAgentLog.mockResolvedValue({ engine: 'opencode', available: false, text: '', maxBytes: 8 * 1024 })
+  bridge.getAppVersion.mockResolvedValue({ versionName: '0.2.0', versionCode: 22, gitSha: 'test' })
   // 默认是一次「全部正常」的自检：多数用例只关心设置页本身，不该被一个非 ok 项影响。
   bridge.runRuntimeSelfCheck.mockResolvedValue({
     operation: 'check',

@@ -361,3 +361,35 @@ export function sumUsage(messages: Array<{ usage?: { input: number; output: numb
   }
   return found ? { input, output } : null
 }
+
+/**
+ * 引擎错误码 → 下一步指引（与 App.tsx 的 RUNTIME_ERROR_MESSAGES 里
+ * AGENT_* 条目同义；两处文案改动时互相通告，见那边的注释）。
+ *
+ * 聊天面板用自己的 errorMessage（只取原文），在这里统一追加指引行，
+ * 于是每条报错都自带“下一步做什么”。未知码返回 null，不画蛇添足。
+ */
+const AGENT_ERROR_HINTS: Readonly<Record<string, string>> = {
+  AGENT_ENGINE_STOPPED: '请先启动服务。',
+  AGENT_ENGINE_PORT_BUSY: '错误里会点名占用者；仍不行就重启应用后重试。',
+  AGENT_ENGINE_START_FAILED: '错误里带有进程遗言（死因原文）；对着遗言处理，或去诊断页看完整引擎日志。',
+  AGENT_ENGINE_REQUEST_FAILED: '服务可能刚崩溃，重新启动服务后重试。',
+  AGENT_ENGINE_MISSING: '请先安装运行时。',
+  AGENT_ENGINE_UNEXPECTED_SERVER: '有其它程序占着这个端口，换个端口启动或停掉它。',
+  RUNTIME_START_INTERRUPTED: '启动操作被中断，请重试。',
+  RUNNER_UNAVAILABLE: '本机缺少运行组件，请重装应用后重试。',
+  SETTINGS_INVALID: '请求参数无效，检查输入后重试。',
+}
+
+export function agentErrorHint(error: unknown): string | null {
+  if (error instanceof Error && 'code' in error && typeof error.code === 'string') {
+    return AGENT_ERROR_HINTS[error.code] ?? null
+  }
+  return null
+}
+
+export function errorMessageWithHint(fallback: string, error: unknown): string {
+  const base = error instanceof Error && error.message !== '' ? error.message : fallback
+  const hint = agentErrorHint(error)
+  return hint === null ? base : `${base} ${hint}`
+}

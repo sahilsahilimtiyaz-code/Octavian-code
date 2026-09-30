@@ -72,6 +72,9 @@ import {
 import type {
   AgentCliState,
   AgentCliStates,
+  AgentLog,
+  AgentLogEngine,
+  AppVersion,
   DiagnosticLogState,
   DiagnosticLogText,
   HarnessLog,
@@ -328,6 +331,8 @@ function recheckForegroundServiceAfterSettle<T>(read: () => Promise<T>, onSettle
 }
 
 const UNKNOWN_RUNTIME_ERROR_MESSAGE = '运行时操作失败，请稍后重试；如问题持续，请重置环境。'
+// 注意：AGENT_* 条目与 agentChat.ts 的 AGENT_ERROR_HINTS 同义（聊天面板走那份），
+// 改一边时看一眼另一边。
 const RUNTIME_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   SOURCE_INCOMPLETE: '请同时配置运行时清单地址和 SHA-256，或同时留空。',
   URL_INVALID: '运行时下载地址格式无效。',
@@ -411,6 +416,15 @@ const RUNTIME_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   HARNESS_STOP_FAILED: '无法停止 Harness 进程，请重试。',
   HARNESS_STOP_TIMEOUT: 'Harness 未在限定时间内停止，请重试。',
   HARNESS_STOP_INTERRUPTED: 'Harness 停止操作被中断，请重试。',
+  AGENT_ENGINE_STOPPED: 'Agent 服务未运行，请先启动服务。',
+  // AGENT_* 与 agentChat.ts 的 AGENT_ERROR_HINTS 同义（聊天面板用那份）：
+  // 改一边文案时看一眼另一边，别让同一个码在两处说出两种下一步。
+  AGENT_ENGINE_PORT_BUSY: 'Agent 服务端口都被占用，错误里会点名占用者；仍不行就重启应用后重试。',
+  AGENT_ENGINE_START_FAILED: 'Agent 服务启动失败，错误里带有进程遗言（死因原文）；对着遗言处理，或去诊断页看完整引擎日志。',
+  AGENT_ENGINE_REQUEST_FAILED: 'Agent 服务请求失败：服务可能刚崩溃，重新启动服务后重试。',
+  AGENT_ENGINE_MISSING: '运行时未内置对应 Agent 程序，请先安装运行时。',
+  AGENT_ENGINE_UNEXPECTED_SERVER: '端口上有应答但认证对不上本服务：有其它程序占着这个端口，换个端口启动或停掉它。',
+  RUNTIME_START_INTERRUPTED: '启动操作被中断，请重试。',
   SHIZUKU_UNBIND_TIMEOUT: 'Shizuku 设备服务未在限定时间内退出，请重试。',
   SHIZUKU_UNBIND_INTERRUPTED: 'Shizuku 设备服务停止操作被中断，请重试。',
   SHIZUKU_UNBIND_FAILED: '无法停止 Shizuku 设备服务，请重试。',
@@ -1607,6 +1621,39 @@ function LogWindowPicker({ options, value, onChange }: {
 }
 
 /**
+ * 构建身份 chip：应用版本名 / 版本码 / git 短 SHA。
+ *
+ * 报障第一步永远是“你装的到底是哪一版”：以前只能去对 CI run 号，
+ * 现在诊断页顶部直接写着。读不到就整行隐藏，不拿占位符糊弄。
+ */
+function BuildVersionChip({ loadAppVersion }: { loadAppVersion: () => Promise<AppVersion> }) {
+  const [version, setVersion] = useState<AppVersion | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    void loadAppVersion().then(
+      value => {
+        if (!cancelled) setVersion(value)
+      },
+      () => {
+        if (!cancelled) setVersion(null)
+      },
+    )
+    return () => {
+      cancelled = true
+    }
+  }, [loadAppVersion])
+
+  if (version === null) return null
+  return (
+    <div className="settings-status-row">
+      <span>{t("应用版本")}</span>
+      <strong>{`${version.versionName} (${version.versionCode}) · ${version.gitSha}`}</strong>
+    </div>
+  )
+}
+
+/**
  * 「运行日志（最近 8 KB / 64 KB / 256 KB）」折叠区块。
  *
  * 为什么需要它：工具调用失败时界面只显示一句不带栈信息的报错，唯一线索是访客进程
@@ -1683,6 +1730,106 @@ function HarnessLogPanel({ loadHarnessLog }: HarnessLogPanelProps) {
           )}
           {!loading && !failed && log !== null && log.available && log.text === '' && (
             <p className="harness-log-state">{t("Harness 进程最近没有输出")}</p>
+          )}
+
+          {!loading && !failed && hasText && (
+            <LogText text={log.text} outputClassName="harness-log-output" />
+          )}
+        </>
+        )}
+      </div>
+    </section>
+  )
+}
+
+interface AgentLogPanelProps {
+  /** 读取引擎进程日志尾部；只在用户展开区块、切换引擎或窗口时调用。 */
+  loadAgentLog: (engine: AgentLogEngine, maxBytes?: number) => Promise<AgentLog>
+}
+
+/**
+ * 「引擎日志」折叠区块：opencode / codex 二选一，窗口与 Harness 日志同档。
+ *
+ * 之前引擎进程的输出只能在报错里看到 1500 字的“遗言”——想看完整上下文
+ * 只能接 adb。有了它，启动失败、握手超时这类问题直接在设备上翻日志。
+ * 同一隐私边界：可能含会话内容，只展示不导出；折叠不读，展开才取。
+ */
+function AgentLogPanel({ loadAgentLog }: AgentLogPanelProps) {
+  const [open, setOpen] = useState(false)
+  const [engine, setEngine] = useState<AgentLogEngine>('opencode')
+  const [windowBytes, setWindowBytes] = useState<number>(HARNESS_LOG_WINDOW_OPTIONS[0])
+  const [log, setLog] = useState<AgentLog | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    setLoading(true)
+    setFailed(false)
+    void loadAgentLog(engine, windowBytes)
+      .then(next => { if (!cancelled) setLog(next) })
+      .catch(() => {
+        if (!cancelled) { setLog(null); setFailed(true) }
+      })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [loadAgentLog, open, engine, windowBytes])
+
+  const hasText = log !== null && log.available && log.text !== ''
+
+  return (
+    <section className="settings-section harness-log-section" aria-labelledby="agent-log-title">
+      <button
+        className="harness-log-toggle"
+        type="button"
+        aria-expanded={open}
+        aria-controls="agent-log-body"
+        onClick={() => setOpen(current => !current)}
+      >
+        <span className="section-icon"><ScrollText size={19} /></span>
+        <span className="harness-log-heading">
+          <strong id="agent-log-title">{t("引擎日志（最近 {0}）", formatLogWindow(windowBytes))}</strong>
+          <small>{t("opencode / codex 进程输出尾部，用于排查引擎启动失败")}</small>
+        </span>
+        {open ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+      </button>
+
+      <div className="harness-log-body" id="agent-log-body" hidden={!open}>
+        {open && (
+        <>
+          <p className="settings-note">
+            {t("这段内容来自引擎进程输出，可能包含会话内容，仅供排障；它只在设备界面里显示，不会写入诊断日志，也不随诊断日志导出。")}
+          </p>
+
+          <div className="segmented" role="tablist" aria-label={t("引擎")}>
+            {(['opencode', 'codex'] as const).map(item => (
+              <button
+                key={item}
+                type="button"
+                role="tab"
+                aria-selected={item === engine}
+                className={item === engine ? 'active' : ''}
+                onClick={() => setEngine(item)}
+              >
+                {item === 'opencode' ? 'OpenCode' : 'Codex'}
+              </button>
+            ))}
+          </div>
+
+          <LogWindowPicker options={HARNESS_LOG_WINDOW_OPTIONS} value={windowBytes} onChange={setWindowBytes} />
+
+          {loading && (
+            <p className="harness-log-state"><Loader2 className="spin" size={16} />{t("正在读取引擎日志…")}</p>
+          )}
+          {!loading && failed && (
+            <p className="harness-log-state" role="alert">{t("读取引擎日志失败，请稍后重试")}</p>
+          )}
+          {!loading && !failed && log !== null && !log.available && (
+            <p className="harness-log-state">{t("当前没有可读取的引擎日志（服务没起过）")}</p>
+          )}
+          {!loading && !failed && log !== null && log.available && log.text === '' && (
+            <p className="harness-log-state">{t("引擎进程最近没有输出")}</p>
           )}
 
           {!loading && !failed && hasText && (
@@ -2280,6 +2427,10 @@ interface SettingsScreenProps {
   keepAlive: KeepAliveState
   /** 读取访客进程输出尾部（窗口可选）；由折叠区块在展开或切换窗口时按需调用。 */
   loadHarnessLog: (maxBytes?: number) => Promise<HarnessLog>
+  /** 读取引擎进程日志尾部；同样只在展开、切换引擎或窗口时调用。 */
+  loadAgentLog: (engine: AgentLogEngine, maxBytes?: number) => Promise<AgentLog>
+  /** 构建身份；诊断页顶部展示一次。 */
+  loadAppVersion: () => Promise<AppVersion>
   /** 读取诊断日志正文窗口；同样只在展开或切换窗口时调用。 */
   loadDiagnosticLog: (maxBytes?: number) => Promise<DiagnosticLogText>
   /** 外置投递区状态；null 表示尚未读到快照。 */
@@ -2344,7 +2495,7 @@ interface SettingsScreenProps {
   onShareDiagnostic: () => void
 }
 
-function SettingsScreen({ busy, diagnostic, draft, keepAlive, lastMailboxExport, lastMailboxImport, loadDiagnosticLog, loadHarnessLog, loadRuntimeVersions, switchRuntimeVersion, deleteRuntimeVersion, refreshRuntime, notify, lastStop, mailbox, mailboxReadFailed, overlayBall, overlayBallReadFailed, storageAccess, storageDirs, storageDirsReadFailed, onAddStorageDirectory, onDraftChange, onExportMailbox, onImportMailbox, onOpenAllFilesAccess, onRefreshMailbox, onRemoveStorageDirectory, page, runSelfCheck, runtime, settingsReadStatus, shizuku, onAuthorize, onBack, onClearDiagnostic, onConnect, onDiagnosticSettings, onLaunch, onLaunchConfirmed, onOpenOverlaySettings, onOpenShizuku, onReloadSettings, onRequestNotificationPermission, onSave, onShareDiagnostic }: SettingsScreenProps) {
+function SettingsScreen({ busy, diagnostic, draft, keepAlive, lastMailboxExport, lastMailboxImport, loadAgentLog, loadAppVersion, loadDiagnosticLog, loadHarnessLog, loadRuntimeVersions, switchRuntimeVersion, deleteRuntimeVersion, refreshRuntime, notify, lastStop, mailbox, mailboxReadFailed, overlayBall, overlayBallReadFailed, storageAccess, storageDirs, storageDirsReadFailed, onAddStorageDirectory, onDraftChange, onExportMailbox, onImportMailbox, onOpenAllFilesAccess, onRefreshMailbox, onRemoveStorageDirectory, page, runSelfCheck, runtime, settingsReadStatus, shizuku, onAuthorize, onBack, onClearDiagnostic, onConnect, onDiagnosticSettings, onLaunch, onLaunchConfirmed, onOpenOverlaySettings, onOpenShizuku, onReloadSettings, onRequestNotificationPermission, onSave, onShareDiagnostic }: SettingsScreenProps) {
   if (settingsReadStatus === 'failed') {
     return <div className="screen loading-screen">
       <p role="alert">{t("无法读取最新设置，请重试")}</p>
@@ -3136,6 +3287,7 @@ function SettingsScreen({ busy, diagnostic, draft, keepAlive, lastMailboxExport,
             />
           </label>
           <div className="settings-status-list">
+            <BuildVersionChip loadAppVersion={loadAppVersion} />
             <div className="settings-status-row">
               <span>{t("日志文件")}</span>
               <strong>{t("{0} 个文件 · {1}", diagnostic.fileCount, formatBytes(diagnostic.totalBytes))}</strong>
@@ -3158,6 +3310,7 @@ function SettingsScreen({ busy, diagnostic, draft, keepAlive, lastMailboxExport,
         {/* 诊断日志正文可直接在应用内查看；运行日志是访客输出尾部，只在界面展示、不进导出。 */}
         <DiagnosticLogPanel loadDiagnosticLog={loadDiagnosticLog} />
         <HarnessLogPanel loadHarnessLog={loadHarnessLog} />
+        <AgentLogPanel loadAgentLog={loadAgentLog} />
         </>
         )}
 
@@ -4024,6 +4177,18 @@ export function App() {
   )
 
   /**
+   * 读取引擎进程日志尾部：与运行日志同一套“折叠才读”纪律，
+   * 内容同样可能含会话、同样只展示不导出。
+   */
+  const loadAgentLog = useCallback(
+    (engine: AgentLogEngine, maxBytes?: number) => runtimeBridge.getAgentLog(engine, { maxBytes }),
+    [],
+  )
+
+  /** 构建身份：诊断页顶部展示，报障时先看这一行。 */
+  const loadAppVersion = useCallback(() => runtimeBridge.getAppVersion(), [])
+
+  /**
    * 读取诊断日志正文窗口。
    *
    * 与状态读取不同，这里会带回日志正文（受控字段），因此同样只在折叠区块展开时才调用；
@@ -4301,7 +4466,7 @@ export function App() {
       default: {
         const page = settingsPageOf(activeView)
         if (page === null) return null
-        return <SettingsScreen key={`${page}-${settingsReadStatus}`} busy={busy} diagnostic={diagnostic} draft={settingsDraft} keepAlive={keepAlive} lastMailboxExport={lastMailboxExport} lastMailboxImport={lastMailboxImport} lastStop={lastStop} loadDiagnosticLog={loadDiagnosticLog} loadHarnessLog={loadHarnessLog} loadRuntimeVersions={loadRuntimeVersions} switchRuntimeVersion={switchRuntimeVersion} deleteRuntimeVersion={deleteRuntimeVersion} refreshRuntime={refreshRuntimeState} notify={notify} mailbox={mailbox} mailboxReadFailed={mailboxReadFailed} overlayBall={overlayBall} overlayBallReadFailed={overlayBallReadFailed} storageAccess={storageAccess} storageDirs={storageDirs} storageDirsReadFailed={storageDirsReadFailed} onAddStorageDirectory={addStorageDirectory} onDraftChange={updateSettingsDraft} onExportMailbox={exportMailbox} onImportMailbox={importMailbox} onOpenAllFilesAccess={openAllFilesAccessSettings} onRefreshMailbox={refreshMailbox} onRemoveStorageDirectory={removeStorageDirectory} page={page} runSelfCheck={runSelfCheck} runtime={runtime} settingsReadStatus={settingsReadStatus} shizuku={shizuku} onAuthorize={requestShizukuPermission} onBack={() => backToView('settings')} onClearDiagnostic={clearDiagnostic} onConnect={connectShizuku} onDiagnosticSettings={saveDiagnosticSettings} onLaunch={launchHarness} onLaunchConfirmed={launchHarnessConfirmed} onOpenOverlaySettings={openOverlaySettings} onOpenShizuku={openShizuku} onReloadSettings={() => openSettings(page)} onRequestNotificationPermission={requestNotificationPermission} onSave={saveSettings} onShareDiagnostic={shareDiagnostic} />
+        return <SettingsScreen key={`${page}-${settingsReadStatus}`} busy={busy} diagnostic={diagnostic} draft={settingsDraft} keepAlive={keepAlive} lastMailboxExport={lastMailboxExport} lastMailboxImport={lastMailboxImport} lastStop={lastStop} loadAgentLog={loadAgentLog} loadAppVersion={loadAppVersion} loadDiagnosticLog={loadDiagnosticLog} loadHarnessLog={loadHarnessLog} loadRuntimeVersions={loadRuntimeVersions} switchRuntimeVersion={switchRuntimeVersion} deleteRuntimeVersion={deleteRuntimeVersion} refreshRuntime={refreshRuntimeState} notify={notify} mailbox={mailbox} mailboxReadFailed={mailboxReadFailed} overlayBall={overlayBall} overlayBallReadFailed={overlayBallReadFailed} storageAccess={storageAccess} storageDirs={storageDirs} storageDirsReadFailed={storageDirsReadFailed} onAddStorageDirectory={addStorageDirectory} onDraftChange={updateSettingsDraft} onExportMailbox={exportMailbox} onImportMailbox={importMailbox} onOpenAllFilesAccess={openAllFilesAccessSettings} onRefreshMailbox={refreshMailbox} onRemoveStorageDirectory={removeStorageDirectory} page={page} runSelfCheck={runSelfCheck} runtime={runtime} settingsReadStatus={settingsReadStatus} shizuku={shizuku} onAuthorize={requestShizukuPermission} onBack={() => backToView('settings')} onClearDiagnostic={clearDiagnostic} onConnect={connectShizuku} onDiagnosticSettings={saveDiagnosticSettings} onLaunch={launchHarness} onLaunchConfirmed={launchHarnessConfirmed} onOpenOverlaySettings={openOverlaySettings} onOpenShizuku={openShizuku} onReloadSettings={() => openSettings(page)} onRequestNotificationPermission={requestNotificationPermission} onSave={saveSettings} onShareDiagnostic={shareDiagnostic} />
       }
     }
   })()

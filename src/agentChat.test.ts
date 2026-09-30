@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createCodexChat, createNativeAgentChat, formatTokens, pollUntilSettled, sumUsage } from './agentChat'
+import {
+  agentErrorHint,
+  createCodexChat,
+  createNativeAgentChat,
+  errorMessageWithHint,
+  formatTokens,
+  pollUntilSettled,
+  sumUsage,
+} from './agentChat'
 import { guessAttachmentMime, sanitizeAttachmentName } from './agentChat'
 import { parseMessageList, parseSession, parseSessionList } from './opencodeClient'
 import type { ChatMessage } from './opencodeClient'
@@ -247,5 +255,17 @@ describe('用量汇总与格式化', () => {
     expect(formatTokens(999)).toBe('999')
     expect(formatTokens(1200)).toBe('1.2k')
     expect(formatTokens(3400000)).toBe('3.4M')
+  })
+})
+
+describe('错误指引', () => {
+  it('已知码追加下一步，未知码只给原文', () => {
+    const known = Object.assign(new Error('Agent 服务未运行。'), { code: 'AGENT_ENGINE_STOPPED' })
+    expect(errorMessageWithHint('兜底', known)).toBe('Agent 服务未运行。 请先启动服务。')
+    const unknown = Object.assign(new Error('某某失败'), { code: 'NOPE' })
+    expect(errorMessageWithHint('兜底', unknown)).toBe('某某失败')
+    expect(errorMessageWithHint('兜底', null)).toBe('兜底')
+    expect(agentErrorHint(known)).toBe('请先启动服务。')
+    expect(agentErrorHint(unknown)).toBeNull()
   })
 })

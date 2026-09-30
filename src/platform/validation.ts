@@ -1,5 +1,8 @@
 import type {
+  AgentLog,
+  AgentLogEngine,
   AllFilesAccessResult,
+  AppVersion,
   DeviceCommand,
   DeviceCommandResult,
   DiagnosticLogExport,
@@ -1010,6 +1013,43 @@ export function validateHarnessLog(value: unknown): HarnessLog {
     text: log.text,
     maxBytes: assertLogWindow(log.maxBytes, HARNESS_LOG_WINDOW_OPTIONS, '运行日志窗口'),
   }
+}
+
+/**
+ * 引擎日志载荷：engine 二选一，其余与运行日志同一套校验（可用位、正文上限、
+ * 空内容一致性、受控窗口）。
+ */
+export function validateAgentLogEngine(value: unknown): AgentLogEngine {
+  if (value !== 'opencode' && value !== 'codex') throw new Error('引擎日志来源无效')
+  return value
+}
+
+export function validateAgentLog(value: unknown): AgentLog {
+  const log = asRecord(value, '引擎日志')
+  if (log.engine !== 'opencode' && log.engine !== 'codex') throw new Error('引擎日志来源格式无效')
+  if (typeof log.available !== 'boolean') throw new Error('引擎日志可用状态格式无效')
+  if (typeof log.text !== 'string') throw new Error('引擎日志内容格式无效')
+  if (log.text.length > HARNESS_LOG_MAX_CHARS) throw new Error('引擎日志内容长度无效')
+  if (!log.available && log.text !== '') throw new Error('引擎日志内容与可用状态不一致')
+  return {
+    engine: log.engine,
+    available: log.available,
+    text: log.text,
+    maxBytes: assertLogWindow(log.maxBytes, HARNESS_LOG_WINDOW_OPTIONS, '引擎日志窗口'),
+  }
+}
+
+/** 构建身份：三段都是展示用字符串/数字，缺一不可。 */
+export function validateAppVersion(value: unknown): AppVersion {
+  const record = asRecord(value, '构建身份')
+  if (typeof record.versionName !== 'string' || record.versionName === '') {
+    throw new Error('构建版本号格式无效')
+  }
+  if (typeof record.versionCode !== 'number' || !Number.isInteger(record.versionCode) || record.versionCode < 0) {
+    throw new Error('构建版本码格式无效')
+  }
+  if (typeof record.gitSha !== 'string' || record.gitSha === '') throw new Error('构建标识格式无效')
+  return { versionName: record.versionName, versionCode: record.versionCode, gitSha: record.gitSha }
 }
 
 /**
