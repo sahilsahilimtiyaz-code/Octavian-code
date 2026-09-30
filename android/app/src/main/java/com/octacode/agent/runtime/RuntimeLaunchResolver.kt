@@ -51,6 +51,12 @@ internal fun prootProfileFallbacks(
 class RuntimeLaunchResolver(
     context: Context,
     private val store: RuntimeStore,
+    /**
+     * 本解析器服务的运行服务标签（见 [RuntimeCommand.prootTmpDirectory]）：
+     * 临时目录按它隔离。四个使用方各传各的（harness / terminal / selfcheck / plugin），
+     * **必填、无默认值**：写错或漏传在编译期就炸，而不是悄悄退回共享目录。
+     */
+    private val serviceTag: String,
     private val includeCredentials: Boolean = true,
 ) {
     private data class CachedProfile(val key: String, val profile: ProotLaunchProfile)
@@ -318,7 +324,7 @@ class RuntimeLaunchResolver(
                 harnessSession = includeCredentials && harnessAuthToken != null,
                 deviceBridgePort = deviceBridgeAccess?.takeIf { includeCredentials }?.port,
             ),
-            environment = RuntimeCommand.hostEnvironment(appContext, store, profile.disableSeccomp),
+            environment = RuntimeCommand.hostEnvironment(appContext, store, serviceTag, profile.disableSeccomp),
             modelCredentialCount = secrets.modelCredentialCount,
         )
     }

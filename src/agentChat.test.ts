@@ -5,6 +5,7 @@ import {
   createNativeAgentChat,
   errorMessageWithHint,
   formatTokens,
+  pollCodexUntilSettled,
   pollUntilSettled,
   sumUsage,
 } from './agentChat'
@@ -213,6 +214,42 @@ describe('pollUntilSettled', () => {
     )
     const result = await pollUntilSettled(listMessages, { intervalMs: 1, maxRounds: 3 })
     expect(result).toHaveLength(1)
+  })
+})
+
+describe('pollCodexUntilSettled', () => {
+  it('shouldContinue 返回 false 时立即收尾，不再拉取', async () => {
+    const list = vi.fn((): Promise<Array<{ text: string }>> => Promise.resolve([{ text: 'a' }]))
+    const result = await pollCodexUntilSettled(list, {
+      intervalMs: 1,
+      maxRounds: 10,
+      shouldContinue: () => false,
+    })
+    // 归属闸先于每一轮：一次都没拉就退出，结果是空表（还没显示的旧会话快照）。
+    expect(list).not.toHaveBeenCalled()
+    expect(result).toEqual([])
+  })
+
+  it('shouldContinue 中途变 false 时提前结束，不必等 maxRounds', async () => {
+    let rounds = 0
+    const list = vi.fn((): Promise<Array<{ text: string }>> => {
+      rounds += 1
+      return Promise.resolve([{ text: `t${rounds}` }])
+    })
+    const result = await pollCodexUntilSettled(list, {
+      intervalMs: 1,
+      maxRounds: 10,
+      shouldContinue: () => rounds < 2,
+    })
+    expect(list.mock.calls.length).toBeLessThanOrEqual(3)
+    expect(result.length).toBeLessThanOrEqual(1)
+  })
+
+  it('不传 shouldContinue 时保持原行为：连续两次一致即停', async () => {
+    const list = vi.fn((): Promise<Array<{ text: string }>> => Promise.resolve([{ text: 'stable' }]))
+    const result = await pollCodexUntilSettled(list, { intervalMs: 1, maxRounds: 5 })
+    expect(result).toEqual([{ text: 'stable' }])
+    expect(list.mock.calls.length).toBeLessThanOrEqual(3)
   })
 })
 

@@ -24,7 +24,7 @@ class UbuntuTerminalManager(
     )
 
     private val appContext = context.applicationContext
-    private val launchResolver = RuntimeLaunchResolver(appContext, store)
+    private val launchResolver = RuntimeLaunchResolver(appContext, store, serviceTag = "terminal")
     private val sessions = ConcurrentHashMap<String, Session>()
     private val ioExecutor = Executors.newCachedThreadPool()
     private val scheduler: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()

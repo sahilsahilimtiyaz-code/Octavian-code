@@ -51,6 +51,21 @@ function threadOf(value: unknown): CodexThread {
   return { id, title: asString(thread.title ?? thread.name) || '未命名会话' }
 }
 
+/**
+ * 从服务端通知的 params 里取**会话锚点**（`threadId` / `thread_id`）。
+ *
+ * 事件流是全局的：turn/item 通知带的是**产生它的那个会话**，而界面同时只显示
+ * 一个会话。拿不到 id（字段缺失/形态不对）时返回 null —— 调用方按“无法归属”
+ * 处理（退回旧的宽松行为），但只要 id 在且与当前会话不同，就会被丢弃，
+ * 否则 A 会话的流式事件会刷新出 B 会话的串台消息。
+ */
+export function codexEventThreadId(params: unknown): string | null {
+  if (typeof params !== 'object' || params === null || Array.isArray(params)) return null
+  const record = params as Record<string, unknown>
+  const raw = record.threadId ?? record.thread_id
+  return typeof raw === 'string' && raw !== '' ? raw : null
+}
+
 /** item 归一化：reasoning 进思考表，message 进正文，shell/工具进工具条。 */
 export function normalizeCodexItem(
   item: unknown,

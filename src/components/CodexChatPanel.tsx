@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { GitFork, Loader2, Plus, Power, RefreshCw, SendHorizontal, Square } from 'lucide-react'
 import { createCodexChat, errorMessageWithHint, formatTokens, pollCodexUntilSettled } from '../agentChat'
+import { codexEventThreadId } from '../codexClient'
 import { extractUsage } from '../opencodeClient'
 import { renderMarkdown } from '../markdown'
 import { t } from '../i18n'
@@ -52,6 +53,19 @@ export function CodexChatPanel({ bridge, installed, onInstall }: CodexChatPanelP
   const [selectedModel, setSelectedModel] = useState('')
   const [usage, setUsage] = useState<{ input: number; output: number } | null>(null)
   const cancelled = useRef(false)
+  /**
+   * 当前会话的**同步锚点**：state 的 `activeId` 要等重渲染才生效，而
+   * `thread/read` 的 resolve、轮询、服务端事件都在这之前回来。异步结果一律
+   * 与它比对——旧会话的迟到结果直接丢弃，否则切走后旧会话的消息会盖掉
+   * 正在看的新会话（串台）。
+   */
+  const activeIdRef = useRef<string | null>(null)
+
+  /** 切换会话的唯一入口：先落同步锚点，再触发 state 更新。 */
+  const selectThread = useCallback((id: string | null) => {
+    activeIdRef.current = id
+    setActiveId(id)
+  }, [])
 
   useEffect(() => {
     cancelled.current = false
@@ -87,7 +101,8 @@ export function CodexChatPanel({ bridge, installed, onInstall }: CodexChatPanelP
         if (cancelled.current) return
         setThreads(value)
         setLoading(false)
-        if (value.length > 0 && activeId === null) setActiveId(value[0].id)
+        // 只在从未选中过时自动选第一条：每次刷新都重置会把用户手动选的会话顶掉。
+        if (value.length > 0 && activeIdRef.current === null) selectThread(value[0].id)
       },
       error => {
         if (cancelled.current) return
@@ -95,7 +110,7 @@ export function CodexChatPanel({ bridge, installed, onInstall }: CodexChatPanelP
         setChatError(errorMessage(error))
       },
     )
-  }, [transport, activeId])
+  }, [transport, selectThread])
 
   const refreshModels = useCallback(() => {
     void transport.listModels().then(
@@ -115,31 +130,35 @@ export function CodexChatPanel({ bridge, installed, onInstall }: CodexChatPanelP
 
   const refreshMessages = useCallback(
     (threadId: string, follow = false) => {
+      // 归属闸：为别的会话发起的读取直接作废（发起时它还是当前会话，随后被切走）。
+      if (activeIdRef.current !== threadId) return
+      const isStale = () => cancelled.current || activeIdRef.current !== threadId
       if (follow) setFollowing(true)
       void transport.readThread(threadId).then(
         value => {
-          if (cancelled.current) return
+          if (isStale()) return
           setMessages(value)
           if (follow) {
-            void pollCodexUntilSettled(() => transport.readThread(threadId), { intervalMs: 2000 }).then(
+            void pollCodexUntilSettled(() => transport.readThread(threadId), {
+              intervalMs: 2000,
+              shouldContinue: () => !isStale(),
+            }).then(
               settled => {
-                if (!cancelled.current) {
-                  setMessages(settled)
-                  setFollowing(false)
-                  setActiveTurnId(null)
-                }
+                if (isStale()) return
+                setMessages(settled)
+                setFollowing(false)
+                setActiveTurnId(null)
               },
               () => {
-                if (!cancelled.current) {
-                  setFollowing(false)
-                  setActiveTurnId(null)
-                }
+                if (isStale()) return
+                setFollowing(false)
+                setActiveTurnId(null)
               },
             )
           }
         },
         error => {
-          if (cancelled.current) return
+          if (isStale()) return
           setChatError(errorMessage(error))
           if (follow) {
             setFollowing(false)
@@ -152,6 +171,11 @@ export function CodexChatPanel({ bridge, installed, onInstall }: CodexChatPanelP
   )
 
   useEffect(() => {
+    // 切走会话：旧会话的进行中状态不带过来。`following` 若不清会永远为 true
+    // （为旧会话跑的轮询已被归属闸终止，不会再有人来关它），界面卡在“正在输入”。
+    setFollowing(false)
+    setActiveTurnId(null)
+    setSending(false)
     if (activeId !== null) {
       setMessages([])
       setUsage(null)
@@ -169,18 +193,25 @@ export function CodexChatPanel({ bridge, installed, onInstall }: CodexChatPanelP
     void transport
       .subscribeEvents(event => {
         if (done || cancelled.current) return
+        // 归属闸：事件带会话 id 且不是当前会话时整条丢弃——否则旧会话的
+        // turn/completed 会关掉新会话的跟随，item/* 会把旧会话内容刷进新会话。
+        // 不带 id 的通知按“无法归属”处理，维持旧行为（宁可多刷不漏刷）。
+        const eventThreadId = codexEventThreadId(event.params)
+        if (eventThreadId !== null && eventThreadId !== activeIdRef.current) return
         if (event.method === 'turn/completed') {
-          if (activeId !== null) refreshMessages(activeId)
+          if (activeIdRef.current !== null) refreshMessages(activeIdRef.current)
           setFollowing(false)
           setActiveTurnId(null)
         } else if (event.method === 'thread/tokenUsage/updated') {
           const parsed = extractUsage(event.params)
           if (parsed !== null && !cancelled.current) setUsage(parsed)
         } else if (event.method === 'turn/started' || event.method.startsWith('item/')) {
-          if (activeId !== null && (sending || following)) {
-            void transport.readThread(activeId).then(
+          const threadId = activeIdRef.current
+          if (threadId !== null && (sending || following)) {
+            void transport.readThread(threadId).then(
               value => {
-                if (!cancelled.current) setMessages(value)
+                if (cancelled.current || activeIdRef.current !== threadId) return
+                setMessages(value)
               },
               () => undefined,
             )
@@ -229,7 +260,7 @@ export function CodexChatPanel({ bridge, installed, onInstall }: CodexChatPanelP
         if (cancelled.current) return
         setCreating(false)
         setThreads(previous => [thread, ...previous])
-        setActiveId(thread.id)
+        selectThread(thread.id)
       },
       error => {
         if (cancelled.current) return
@@ -240,23 +271,27 @@ export function CodexChatPanel({ bridge, installed, onInstall }: CodexChatPanelP
   }
 
   const send = () => {
-    if (activeId === null || sending) return
+    const threadId = activeId
+    if (threadId === null || sending) return
     const text = composer.trim()
     if (text === '') return
     setComposer('')
     setSending(true)
     setChatError(null)
     void transport
-      .startTurn(activeId, text, selectedModel === '' ? undefined : selectedModel)
+      .startTurn(threadId, text, selectedModel === '' ? undefined : selectedModel)
       .then(
         turnId => {
           if (cancelled.current) return
+          // 发言期间切走了会话：turnId 属于旧会话，不能落进新会话的停/续状态。
+          if (activeIdRef.current !== threadId) return
           setActiveTurnId(turnId === '' ? null : turnId)
           setSending(false)
-          refreshMessages(activeId, true)
+          refreshMessages(threadId, true)
         },
         error => {
           if (cancelled.current) return
+          if (activeIdRef.current !== threadId) return
           setSending(false)
           setChatError(errorMessage(error))
         },
@@ -303,7 +338,7 @@ export function CodexChatPanel({ bridge, installed, onInstall }: CodexChatPanelP
         if (cancelled.current) return
         setForking(false)
         setThreads(previous => [thread, ...previous])
-        setActiveId(thread.id)
+        selectThread(thread.id)
       },
       error => {
         if (cancelled.current) return
@@ -390,7 +425,7 @@ export function CodexChatPanel({ bridge, installed, onInstall }: CodexChatPanelP
                 key={thread.id}
                 type="button"
                 className={thread.id === activeId ? 'chat-session active' : 'chat-session'}
-                onClick={() => setActiveId(thread.id)}
+                onClick={() => selectThread(thread.id)}
               >
                 {thread.title}
               </button>
@@ -405,7 +440,13 @@ export function CodexChatPanel({ bridge, installed, onInstall }: CodexChatPanelP
 
           <section className="chat-transcript" aria-live="polite" aria-label={t('对话')}>
             {messages.map((message, index) => (
-              <div key={message.id !== '' ? message.id : `m${index}`} className={message.role === 'user' ? 'chat-message user message-in' : 'chat-message assistant message-in'}>
+              <div
+                // 键必须唯一且跨快照稳定：Codex 的条目 id 可能重复（同一轮的分段共用 id）
+                // 或整列缺失，重复键会让 React 复用错 DOM 节点——表现是滚动锚点跳动、
+                // 旧消息串到新气泡里。index 后缀保证唯一，id 前缀保证新增时稳定。
+                key={message.id !== '' ? `${message.id}:${index}` : `m${index}`}
+                className={message.role === 'user' ? 'chat-message user message-in' : 'chat-message assistant message-in'}
+              >
                 <div className="chat-bubble">
                   {message.reasoning.length > 0 && (
                     <details className="chat-reasoning">
@@ -422,8 +463,8 @@ export function CodexChatPanel({ bridge, installed, onInstall }: CodexChatPanelP
                   )}
                   {(message.tools ?? []).length > 0 && (
                     <span className="chat-attachments">
-                      {(message.tools ?? []).map(tool => (
-                        <span className="chat-chip" key={tool.slice(0, 48)}>{tool.slice(0, 120)}</span>
+                      {(message.tools ?? []).map((tool, toolIndex) => (
+                        <span className="chat-chip" key={`${index}:${toolIndex}`}>{tool.slice(0, 120)}</span>
                       ))}
                     </span>
                   )}

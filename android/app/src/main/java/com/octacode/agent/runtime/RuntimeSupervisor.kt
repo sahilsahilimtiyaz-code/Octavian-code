@@ -93,7 +93,7 @@ class RuntimeSupervisor(
     private val status: RuntimeStatus,
 ) {
     private val appContext = context.applicationContext
-    private val launchResolver = RuntimeLaunchResolver(appContext, store)
+    private val launchResolver = RuntimeLaunchResolver(appContext, store, serviceTag = "harness")
     private val lock = Any()
     private val startCancellation = RuntimeStartCancellation()
     private val startCancellationEpoch = AtomicLong(0)

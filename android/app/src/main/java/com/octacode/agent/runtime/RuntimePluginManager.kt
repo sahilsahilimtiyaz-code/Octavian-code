@@ -13,7 +13,7 @@ import java.nio.file.StandardOpenOption
 /** 不启动 Harness 的配置管理通道；不向管理进程传递模型或设备桥接凭据。 */
 class RuntimePluginManager(context: Context, private val store: RuntimeStore) {
     private val appContext = context.applicationContext
-    private val resolver = RuntimeLaunchResolver(context, store, includeCredentials = false)
+    private val resolver = RuntimeLaunchResolver(context, store, serviceTag = "plugin", includeCredentials = false)
     private val directory get() = File(store.currentRoot, "root/.dsh-mobile")
 
     /** 最近一次**成功**修复所对应的运行时代次指纹；见 [repairInstalledIfNeeded]。 */

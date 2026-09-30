@@ -2,6 +2,7 @@ package com.octacode.agent.runtime
 
 import android.content.Context
 import java.io.File
+import java.io.IOException
 
 data class RuntimeLaunchSpec(
     val argv: List<String>,
@@ -126,7 +127,11 @@ object RuntimeCommand {
         return prootArgv(
             ProotArgvInput(
                 runnerPath = store.launchRunnerFile.absolutePath,
-                rootPath = store.currentRoot.absolutePath,
+                // `-r` 必须是**内核规范路径**：Android 上 `/data/user/0/<pkg>` 是指向
+                // `/data/data/<pkg>` 的符号链接，而 PRoot 按给定的根串做宿主路径前缀剥离。
+                // 非规范根 + 规范 cwd（`chdir` 后内核给出的 `/data/data/...`）对不上时，
+                // 前缀剥离失效，访客会看到宿主绝对路径（`getcwd ENOSYS` 的同类病灶）。
+                rootPath = canonicalPathOrSelf(store.currentRoot),
                 permissionMode = store.harnessPermissionMode().wireValue,
                 entrypoint = entrypoint,
                 bindMounts = bindMounts,
@@ -190,15 +195,24 @@ object RuntimeCommand {
         }
     }
 
+    /**
+     * 组装 PRoot 宿主进程环境。
+     *
+     * @param serviceTag 运行服务的隔离标签（`harness` / `terminal` / `selfcheck` /
+     *   `plugin` / `engine-<id>`）：临时目录按它分目录，终端、Harness、各引擎并发时
+     *   不再共用同一个 `proot-tmp` —— 一个服务清缓存/残留不会波及另一个服务正在用的
+     *   临时文件，出问题时也能按目录直接定位归属。
+     */
     fun hostEnvironment(
         context: Context,
         store: RuntimeStore,
+        serviceTag: String,
         disableSeccomp: Boolean = false,
     ): Map<String, String> {
         if (!store.runnerAvailable()) {
             throw RuntimeFailure("RUNNER_UNAVAILABLE", "APK 未包含当前架构的受信任运行器")
         }
-        val temporary = File(context.cacheDir, "proot-tmp")
+        val temporary = prootTmpDirectory(context.cacheDir, serviceTag)
         if (!temporary.exists() && !temporary.mkdirs()) {
             throw RuntimeFailure("FILESYSTEM_ERROR", "无法创建运行器临时目录")
         }
@@ -215,6 +229,40 @@ object RuntimeCommand {
             if (disableSeccomp) put("PROOT_NO_SECCOMP", "1")
         }
     }
+
+    /**
+     * 规范化路径用于 `-r` 根参数；规范化失败时退回 [File.getAbsolutePath]。
+     *
+     * 用 `canonicalPath` 是因为它解析**已有**组件上的符号链接（`/data/user/0` →
+     * `/data/data`）；路径不存在时它退化为词法规范化，不会抛错。`getAbsolutePath`
+     * 不解析任何链接，正是要避免的那种结果。失败（`IOException`/`SecurityException`，
+     * 个别 ROM 对 app 数据目录做限制时可能出现）时退回原绝对路径 —— 退回旧形态
+     * 等价于修复前的行为，绝不能因为一次规范化失败就把启动链路整个打断。
+     */
+    internal fun canonicalPathOrSelf(path: File): String = try {
+        path.canonicalPath
+    } catch (_: IOException) {
+        path.absolutePath
+    } catch (_: SecurityException) {
+        path.absolutePath
+    }
+
+    /**
+     * 每个运行服务独立的 PRoot 临时目录（纯函数，JVM 可单测）。
+     *
+     * 标签白名单（`[a-z0-9-]+`）在这里把关：标签一旦能带 `/`、`..`，目录就会被拼到
+     * `proot-tmp` 之外去 —— 这是**路径拼接**，不是文件名。取值全部来自内部常量
+     * （`harness`/`terminal`/`selfcheck`/`plugin`/`engine-<id>`），白名单只防回归。
+     * 旧版本遗留的扁平 `cacheDir/proot-tmp` 不再被引用，由系统缓存清理回收。
+     */
+    internal fun prootTmpDirectory(cacheDir: File, serviceTag: String): File {
+        if (!SERVICE_TAG.matches(serviceTag)) {
+            throw RuntimeFailure("RUNNER_ARGUMENT_INVALID", "运行服务标签无效")
+        }
+        return File(cacheDir, "proot-tmp/$serviceTag")
+    }
+
+    private val SERVICE_TAG = Regex("^[a-z0-9][a-z0-9-]{0,31}$")
 
     private fun validateBindMount(mount: ProotBindMount) {
         if (!isSafeAbsolutePath(mount.source) || !isSafeAbsolutePath(mount.target)) {

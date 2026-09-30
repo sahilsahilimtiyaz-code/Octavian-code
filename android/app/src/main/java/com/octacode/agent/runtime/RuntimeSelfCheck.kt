@@ -33,7 +33,7 @@ class RuntimeSelfCheck(context: Context, private val store: RuntimeStore) {
     private val appContext = context.applicationContext
 
     /** 绝不含凭据：自检进程不需要模型 API Key，最小权限。 */
-    private val resolver = RuntimeLaunchResolver(context, store, includeCredentials = false)
+    private val resolver = RuntimeLaunchResolver(context, store, serviceTag = "selfcheck", includeCredentials = false)
 
     private val directory get() = File(store.currentRoot, "root/.dsh-mobile")
 

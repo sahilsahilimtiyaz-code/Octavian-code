@@ -193,17 +193,23 @@ export async function pollUntilSettled(
 /**
  * Codex 版跟随轮询：同一套“不再变长即停”规则，跑在 CodexMessage 上。
  * 单独一份而不是泛型化——两个消息形状不同，硬泛型只会把指纹逻辑藏起来。
+ *
+ * @param options.shouldContinue 轮询期间的**归属闸**：返回 false 立即收尾。
+ *   切走会话后，为旧会话跑的轮询最多还会再拉 90×2s —— 结果既不显示又占着
+ *   `following`，界面看起来卡在“正在输入”。调用方通常传“仍是当前会话”的判定。
  */
 export async function pollCodexUntilSettled<T extends { text: string }>(
   listMessages: () => Promise<T[]>,
-  options?: { intervalMs?: number; maxRounds?: number },
+  options?: { intervalMs?: number; maxRounds?: number; shouldContinue?: () => boolean },
 ): Promise<T[]> {
   const intervalMs = options?.intervalMs ?? 2000
   const maxRounds = options?.maxRounds ?? 90
+  const shouldContinue = options?.shouldContinue
   let previous = ''
   let steady = 0
   let latest: T[] = []
   for (let round = 0; round < maxRounds; round += 1) {
+    if (shouldContinue !== undefined && !shouldContinue()) return latest
     try {
       latest = await listMessages()
     } catch {

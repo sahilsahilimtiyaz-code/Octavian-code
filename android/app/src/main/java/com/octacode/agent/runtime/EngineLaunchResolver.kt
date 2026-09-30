@@ -35,7 +35,10 @@ class EngineLaunchResolver(
         }
     }
 
-    fun launchEngine(
+    // internal：入参 RuntimeSecretDelivery 是 internal 类型，public 函数暴露它
+    // 是编译错误（exposes its internal parameter type）；调用方（两个引擎服务）
+    // 与本类同模块，internal 不影响任何使用。
+    internal fun launchEngine(
         engineId: String,
         entrypoint: List<String>,
         probeEntrypoint: List<String>,
@@ -53,7 +56,10 @@ class EngineLaunchResolver(
         RuntimeDns.refresh(appContext, store.resolverFile)
         RuntimeDns.refreshHosts(store.hostsFile)
         val key = engineProfileKey(manifest, engineId)
-        existingEngineProfile(engineId, key)?.let { return buildEngineLaunch(it, entrypoint, secrets) }
+        val serviceTag = "engine-$engineId"
+        existingEngineProfile(engineId, key)?.let {
+            return buildEngineLaunch(it, entrypoint, secrets, serviceTag)
+        }
         val candidates = engineProfileCandidates(
             systemBinds = engineSystemBinds(),
             mailboxBinds = RuntimeMailbox(store).bindMounts(),
@@ -71,14 +77,14 @@ class EngineLaunchResolver(
                 val profile = pending.removeFirst()
                 if (!attempted.add(profile)) continue
                 val result = ProcessProbe.run(
-                    buildEngineLaunch(profile, probeEntrypoint, RuntimeSecretDelivery.NONE),
+                    buildEngineLaunch(profile, probeEntrypoint, RuntimeSecretDelivery.NONE, serviceTag),
                     store.currentRoot,
                     ENGINE_PROBE_TIMEOUT_SECONDS,
                     externalCancellation,
                 )
                 if (result.succeeded) {
                     rememberEngineProfile(engineId, key, profile)
-                    return buildEngineLaunch(profile, entrypoint, secrets)
+                    return buildEngineLaunch(profile, entrypoint, secrets, serviceTag)
                 }
                 failures.add(0, result)
                 engineFallbacks(profile, result).forEach { fallback ->
@@ -95,6 +101,7 @@ class EngineLaunchResolver(
         profile: ProotLaunchProfile,
         entrypoint: List<String>,
         secrets: RuntimeSecretDelivery,
+        serviceTag: String,
     ) = RuntimeLaunchSpec(
         argv = RuntimeCommand.prootArgv(
             store = store,
@@ -102,7 +109,7 @@ class EngineLaunchResolver(
             bindMounts = profile.bindMounts,
             secrets = secrets,
         ),
-        environment = RuntimeCommand.hostEnvironment(appContext, store, profile.disableSeccomp),
+        environment = RuntimeCommand.hostEnvironment(appContext, store, serviceTag, profile.disableSeccomp),
         modelCredentialCount = secrets.modelCredentialCount,
     )
 

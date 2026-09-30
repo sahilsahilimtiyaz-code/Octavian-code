@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   CodexClient,
+  codexEventThreadId,
   normalizeCodexItem,
   parseCodexMessages,
   parseCodexModels,
@@ -30,6 +31,25 @@ describe('normalizeCodexItem', () => {
     normalizeCodexItem({ type: 'fileEdit', content: 'diff' }, collect)
     normalizeCodexItem(null, collect)
     expect(collect).toEqual({ text: ['答'], reasoning: ['想想'], tools: ['ls', 'diff'] })
+  })
+})
+
+describe('codexEventThreadId', () => {
+  it('认 camelCase 与 snake_case 两种形态', () => {
+    expect(codexEventThreadId({ threadId: 'thr_1' })).toBe('thr_1')
+    expect(codexEventThreadId({ thread_id: 'thr_1' })).toBe('thr_1')
+    // snake_case 形态优先级更低时无所谓——两种都得认，服务端两版都发过。
+    expect(codexEventThreadId({ threadId: 'a', thread_id: 'b' })).toBe('a')
+  })
+
+  it('拿不到会话 id 时返回 null（调用方按“无法归属”处理）', () => {
+    expect(codexEventThreadId(null)).toBeNull()
+    expect(codexEventThreadId(undefined)).toBeNull()
+    expect(codexEventThreadId('thr_1')).toBeNull()
+    expect(codexEventThreadId([])).toBeNull()
+    expect(codexEventThreadId({})).toBeNull()
+    expect(codexEventThreadId({ threadId: '' })).toBeNull()
+    expect(codexEventThreadId({ threadId: 42 })).toBeNull()
   })
 })
 
