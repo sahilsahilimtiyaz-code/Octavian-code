@@ -163,17 +163,23 @@ function toChatMessages(messages: CodexMessage[]): ChatMessage[] {
  *
  * 连续两次快照完全一致（条数 + 末条文本）即停；超时按失败收尾。
  * 调用方负责在组件卸载时忽略迟到的 resolve（见 OpenCodeChatPanel）。
+ *
+ * @param options.shouldContinue 轮询期间的**归属闸**：返回 false 立即收尾。
+ *   切走会话后，为旧会话跑的轮询还会再拉最多 90×2s —— 结果不显示却占着
+ *   `following`，界面卡在“正在输入”。
  */
 export async function pollUntilSettled(
   listMessages: () => Promise<ChatMessage[]>,
-  options?: { intervalMs?: number; maxRounds?: number },
+  options?: { intervalMs?: number; maxRounds?: number; shouldContinue?: () => boolean },
 ): Promise<ChatMessage[]> {
   const intervalMs = options?.intervalMs ?? 2000
   const maxRounds = options?.maxRounds ?? 90
+  const shouldContinue = options?.shouldContinue
   let previous = ''
   let steady = 0
   let latest: ChatMessage[] = []
   for (let round = 0; round < maxRounds; round += 1) {
+    if (shouldContinue !== undefined && !shouldContinue()) return latest
     try {
       latest = await listMessages()
     } catch {

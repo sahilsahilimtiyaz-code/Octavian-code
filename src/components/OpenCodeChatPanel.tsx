@@ -163,6 +163,19 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
   const [forking, setForking] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
   const cancelled = useRef(false)
+  /**
+   * 当前会话的**同步锚点**（与 CodexChatPanel 同一套）：state 的 `activeId`
+   * 要等重渲染才生效，而 `listMessages` 的 resolve、轮询、SSE 事件都在这之前
+   * 回来。异步结果一律与它比对——旧会话的迟到结果直接丢弃，否则切走后
+   * 旧会话的消息/审批卡会盖掉正在看的新会话。
+   */
+  const activeIdRef = useRef<string | null>(null)
+
+  /** 切换会话的唯一入口：先落同步锚点，再触发 state 更新。 */
+  const selectSession = useCallback((id: string | null) => {
+    activeIdRef.current = id
+    setActiveId(id)
+  }, [])
 
   useEffect(() => {
     cancelled.current = false
@@ -201,9 +214,10 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
           setSessions(value)
           setLoading(false)
           if (selectId !== undefined) {
-            setActiveId(selectId)
-          } else if (value.length > 0 && activeId === null) {
-            setActiveId(value[0].id)
+            selectSession(selectId)
+          } else if (value.length > 0 && activeIdRef.current === null) {
+            // 只在从未选中过时自动选第一条：每次刷新都重置会把用户手动选的会话顶掉。
+            selectSession(value[0].id)
           }
         },
         error => {
@@ -213,7 +227,7 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
         },
       )
     },
-    [transport, activeId],
+    [transport, selectSession],
   )
 
   useEffect(() => {
@@ -309,27 +323,33 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
 
   const refreshMessages = useCallback(
     (sessionId: string, follow = false) => {
+      // 归属闸：为别的会话发起的读取直接作废（发起时它还是当前会话，随后被切走）。
+      if (activeIdRef.current !== sessionId) return
+      const isStale = () => cancelled.current || activeIdRef.current !== sessionId
       if (follow) setFollowing(true)
       void transport.listMessages(sessionId).then(
         value => {
-          if (cancelled.current) return
+          if (isStale()) return
           setMessages(value)
           if (follow) {
-            void pollUntilSettled(() => transport.listMessages(sessionId), { intervalMs: 2000 }).then(
+            void pollUntilSettled(() => transport.listMessages(sessionId), {
+              intervalMs: 2000,
+              shouldContinue: () => !isStale(),
+            }).then(
               settled => {
-                if (!cancelled.current) {
-                  setMessages(settled)
-                  setFollowing(false)
-                }
+                if (isStale()) return
+                setMessages(settled)
+                setFollowing(false)
               },
               () => {
-                if (!cancelled.current) setFollowing(false)
+                if (isStale()) return
+                setFollowing(false)
               },
             )
           }
         },
         error => {
-          if (cancelled.current) return
+          if (isStale()) return
           setChatError(errorMessage(error))
           if (follow) setFollowing(false)
         },
@@ -339,6 +359,14 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
   )
 
   useEffect(() => {
+    // 切走会话：旧会话的进行中状态不带过来。`following` 若不清会永远为 true
+    // （为旧会话跑的轮询已被归属闸终止，不会再有人来关它），界面卡在“正在输入”。
+    setFollowing(false)
+    setSending(false)
+    setRegenerating(false)
+    setStopping(false)
+    setQuestions([])
+    setPermissions([])
     if (activeId !== null) {
       setMessages([])
       refreshMessages(activeId)
@@ -438,9 +466,12 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
 
   const refreshApprovals = useCallback(
     (sessionId: string) => {
+      // 与消息同一条归属闸：审批卡是会话私有状态，旧会话的迟到轮询不许覆盖。
+      if (activeIdRef.current !== sessionId) return
+      const isStale = () => cancelled.current || activeIdRef.current !== sessionId
       void transport.listQuestions(sessionId).then(
         value => {
-          if (!cancelled.current) setQuestions(value)
+          if (!isStale()) setQuestions(value)
         },
         () => {
           // 待答轮询失败不炸出横幅：审批卡片缺席比满屏报错好，下轮再试。
@@ -448,7 +479,7 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
       )
       void transport.permissionFeed(sessionId).then(
         value => {
-          if (!cancelled.current) setPermissions(value)
+          if (!isStale()) setPermissions(value)
         },
         () => undefined,
       )
@@ -458,21 +489,23 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
 
   const handleAgentEvent = useCallback(
     (event: AgentEvent) => {
+      const sessionId = activeIdRef.current
       // 审批与问答事件立刻拉一次卡片；其它事件在跟随时顺手刷新一次消息表。
       if (event.type.includes('permission') || event.type.includes('question')) {
-        if (activeId !== null) refreshApprovals(activeId)
+        if (sessionId !== null) refreshApprovals(sessionId)
         return
       }
-      if (activeId !== null && (sending || following)) {
-        void transport.listMessages(activeId).then(
+      if (sessionId !== null && (sending || following)) {
+        void transport.listMessages(sessionId).then(
           value => {
-            if (!cancelled.current) setMessages(value)
+            if (cancelled.current || activeIdRef.current !== sessionId) return
+            setMessages(value)
           },
           () => undefined,
         )
       }
     },
-    [activeId, refreshApprovals, sending, following, transport],
+    [refreshApprovals, sending, following, transport],
   )
 
   useEffect(() => {
@@ -502,9 +535,10 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
   // 跟随期间顺带轮询审批（SSE 万一没通，卡片最多晚几秒出现，不会永远缺席）。
   useEffect(() => {
     if (activeId === null || (!sending && !following)) return
-    refreshApprovals(activeId)
+    const sessionId = activeId
+    refreshApprovals(sessionId)
     const timer = window.setInterval(() => {
-      if (!cancelled.current) refreshApprovals(activeId)
+      if (!cancelled.current) refreshApprovals(sessionId)
     }, 4000)
     return () => window.clearInterval(timer)
   }, [activeId, sending, following, refreshApprovals])
@@ -550,8 +584,8 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
         setRenaming(current => (current?.id === sessionId ? null : current))
         const remaining = sessions.filter(item => item.id !== sessionId)
         setSessions(remaining)
-        if (activeId === sessionId) {
-          setActiveId(remaining.length > 0 ? remaining[0].id : null)
+        if (activeIdRef.current === sessionId) {
+          selectSession(remaining.length > 0 ? remaining[0].id : null)
         }
       },
       error => {
@@ -580,7 +614,7 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
           const label = labelParts.join(' · ')
           setSessionModels(previous => ({ ...previous, [session.id]: label }))
         }
-        setActiveId(session.id)
+        selectSession(session.id)
       },
       error => {
         if (cancelled.current) return
@@ -591,7 +625,8 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
   }
 
   const send = () => {
-    if (activeId === null || sending) return
+    const sessionId = activeId
+    if (sessionId === null || sending) return
     const text = composer.trim()
     const withFiles = staged.length > 0
     const parts: AgentChatPart[] = []
@@ -610,17 +645,20 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
     setFailedSend(null)
     setChatError(null)
     void transport
-      .sendMessage(activeId, text, withFiles ? parts : undefined)
-      .then(() => transport.listMessages(activeId))
+      .sendMessage(sessionId, text, withFiles ? parts : undefined)
+      .then(() => transport.listMessages(sessionId))
       .then(
         value => {
           if (cancelled.current) return
+          // 发言期间切走了会话：结果属于旧会话，不许写进新会话的转录。
+          if (activeIdRef.current !== sessionId) return
           setMessages(value)
           setSending(false)
-          refreshMessages(activeId, true)
+          refreshMessages(sessionId, true)
         },
         error => {
           if (cancelled.current) return
+          if (activeIdRef.current !== sessionId) return
           setSending(false)
           // 发送失败把正文还给输入框：字不能丢，重试按钮直接再发一次。
           if (!withFiles) {
@@ -663,17 +701,19 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
     setChatError(null)
     void (async () => {
       try {
+        // 切走会话不中断循环：删一半发一半是最坏结果，服务端的重写要整单做完；
+        // 只把 UI 收尾挡在归属闸外（切走时切换效果已复位这些状态）。
         for (const message of trailing) {
           if (cancelled.current) return
           await transport.deleteMessage(sessionId, message.id)
         }
         if (cancelled.current) return
         await transport.sendMessage(sessionId, lastUser.text)
-        if (cancelled.current) return
+        if (cancelled.current || activeIdRef.current !== sessionId) return
         setRegenerating(false)
         refreshMessages(sessionId, true)
       } catch (error) {
-        if (cancelled.current) return
+        if (cancelled.current || activeIdRef.current !== sessionId) return
         setRegenerating(false)
         setChatError(errorMessage(error))
       }
@@ -713,11 +753,11 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
         }
         if (cancelled.current) return
         await transport.sendMessage(sessionId, draft)
-        if (cancelled.current) return
+        if (cancelled.current || activeIdRef.current !== sessionId) return
         setSending(false)
         refreshMessages(sessionId, true)
       } catch (error) {
-        if (cancelled.current) return
+        if (cancelled.current || activeIdRef.current !== sessionId) return
         setSending(false)
         setComposer(draft)
         setFailedSend(draft)
@@ -730,19 +770,22 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
 
   /** 停止本轮：先让服务端 abort，再停掉本地的跟随轮询，两侧都停才算真停。 */
   const stopRun = () => {
-    if (activeId === null || (!sending && !following) || stopping) return
+    const sessionId = activeId
+    if (sessionId === null || (!sending && !following) || stopping) return
     setStopping(true)
-    void transport.abortSession(activeId).then(
+    void transport.abortSession(sessionId).then(
       () => {
         if (cancelled.current) return
         setStopping(false)
+        if (activeIdRef.current !== sessionId) return
         setSending(false)
         setFollowing(false)
-        refreshMessages(activeId)
+        refreshMessages(sessionId)
       },
       error => {
         if (cancelled.current) return
         setStopping(false)
+        if (activeIdRef.current !== sessionId) return
         setSending(false)
         setFollowing(false)
         setChatError(errorMessage(error))
@@ -779,7 +822,7 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
         if (cancelled.current) return
         setForking(false)
         setSessions(previous => [session, ...previous])
-        setActiveId(session.id)
+        selectSession(session.id)
       },
       error => {
         if (cancelled.current) return
@@ -1081,7 +1124,7 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
                   <button
                     type="button"
                     className={session.id === activeId ? 'chat-session active' : 'chat-session'}
-                    onClick={() => setActiveId(session.id)}
+                    onClick={() => selectSession(session.id)}
                   >
                     {session.title}
                   </button>
@@ -1225,7 +1268,12 @@ export function OpenCodeChatPanel({ bridge, installed, harnessRunning, onInstall
             )}
             {usageSummary(messages)}
             {messages.map((message, index) => (
-              <div key={message.id !== '' ? message.id : `m${index}`} className={message.role === 'user' ? 'chat-message user message-in' : 'chat-message assistant message-in'}>
+              <div
+                // 键加 index 后缀兜底唯一：服务端 id 缺失/重复时 React 会复用错
+                // DOM 节点（滚动锚点跳动、气泡串内容），id 前缀保证新增时稳定。
+                key={message.id !== '' ? `${message.id}:${index}` : `m${index}`}
+                className={message.role === 'user' ? 'chat-message user message-in' : 'chat-message assistant message-in'}
+              >
                 <div className="chat-bubble">
                   {message.reasoning.length > 0 && (
                     <details className="chat-reasoning">

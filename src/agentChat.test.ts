@@ -215,6 +215,44 @@ describe('pollUntilSettled', () => {
     const result = await pollUntilSettled(listMessages, { intervalMs: 1, maxRounds: 3 })
     expect(result).toHaveLength(1)
   })
+
+  it('shouldContinue 返回 false 时立即收尾，不再拉取', async () => {
+    const listMessages = vi.fn((): Promise<ChatMessage[]> =>
+      Promise.resolve([{ id: 'a', role: 'user', text: 'old', attachments: [], reasoning: [] }]),
+    )
+    const result = await pollUntilSettled(listMessages, {
+      intervalMs: 1,
+      maxRounds: 10,
+      shouldContinue: () => false,
+    })
+    // 归属闸先于每一轮：切走会话后一次都不该再拉，也不许把旧会话快照交回去。
+    expect(listMessages).not.toHaveBeenCalled()
+    expect(result).toEqual([])
+  })
+
+  it('shouldContinue 中途变 false 时提前结束，不必等 maxRounds', async () => {
+    let rounds = 0
+    const listMessages = vi.fn((): Promise<ChatMessage[]> => {
+      rounds += 1
+      return Promise.resolve([{ id: 'a', role: 'assistant', text: `t${rounds}`, attachments: [], reasoning: [] }])
+    })
+    const result = await pollUntilSettled(listMessages, {
+      intervalMs: 1,
+      maxRounds: 10,
+      shouldContinue: () => rounds < 2,
+    })
+    expect(listMessages.mock.calls.length).toBeLessThanOrEqual(3)
+    expect(result.length).toBeLessThanOrEqual(1)
+  })
+
+  it('不传 shouldContinue 时保持原行为：连续两次一致即停', async () => {
+    const listMessages = vi.fn(
+      (): Promise<ChatMessage[]> => Promise.resolve([{ id: 'a', role: 'user', text: 'stable', attachments: [], reasoning: [] }]),
+    )
+    const result = await pollUntilSettled(listMessages, { intervalMs: 1, maxRounds: 5 })
+    expect(result).toHaveLength(1)
+    expect(listMessages.mock.calls.length).toBeLessThanOrEqual(3)
+  })
 })
 
 describe('pollCodexUntilSettled', () => {
