@@ -714,13 +714,19 @@ class AgentEngineServer(private val store: RuntimeStore) {
         // 启动环境直接取解析结果：清空继承环境后铺档里的（PROOT_TMP_DIR、
         // PROOT_LOADER、seccomp 开关都在里面，和 Harness 同源）。
         val started = try {
-            ProcessBuilder(spec.argv)
+            ProcessBuilder(EngineResidual.pidWritingLaunchArgv(spec.argv))
                 .directory(store.currentRoot)
                 .redirectErrorStream(true)
                 .redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
                 .also { builder ->
                     builder.environment().clear()
                     builder.environment().putAll(spec.environment)
+                    // pidfile 由包装层的 shell 写（见 EngineResidual.pidWritingLaunchArgv），
+                    // 这里只把路径递过去；启动即落盘，不等本进程回头补写。
+                    builder.environment().put(
+                        EngineResidual.PID_FILE_ENV,
+                        store.agentEnginePidFile.absolutePath,
+                    )
                 }
                 .start()
         } catch (error: Throwable) {
@@ -739,9 +745,8 @@ class AgentEngineServer(private val store: RuntimeStore) {
             stopLocked()
             throw failure
         }
-        // 认领成功才写 pidfile：下次启动先收尸，stop() 时清掉。
-        // 写不下也不阻断启动（端口回退仍能兜底），只降级残留回收。
-        EngineResidual.ownPid(started)?.let { EngineResidual.writePidFile(store.agentEnginePidFile, it) }
+        // pidfile 已由启动包装在 start() 当下写好（见 EngineResidual.pidWritingLaunchArgv），
+        // 这里不再从 Process 反查 pid——android.jar 没有 Process.pid()，反查只能是假的。
         return state()
     }
 

@@ -18,34 +18,40 @@ import java.io.File
  * 环境标记、pidfile 强绑定，硬借只会把两个服务的生死搅在一起。
  */
 internal object EngineResidual {
-    /** 本进程的子进程 pid：优先官方 API，古董设备回退解析 toString。 */
-    fun ownPid(process: Process): Int? {
-        try {
-            val pid = process.pid().toInt()
-            if (pid > 1) return pid
-        } catch (_: Throwable) {
-        }
-        return try {
-            Regex("pid=(\\d+)").find(process.toString())
-                ?.groupValues?.get(1)?.toIntOrNull()?.takeIf { it > 1 }
-        } catch (_: Throwable) {
-            null
-        }
+    /**
+     * pidfile 路径的**宿主**环境条目名（与 RuntimeSupervisor 的同名条目一致）。
+     *
+     * 包装层的 shell 从 `$DSH_PIDFILE` 读路径：路径只进环境、不进 argv——
+     * 命令行会被 `ps` 原样看见，环境条目则只有同 UID 读得到。
+     */
+    const val PID_FILE_ENV = "DSH_PIDFILE"
+
+    /**
+     * 启动包装：`/system/bin/sh -c 'echo $$ > "$DSH_PIDFILE"; exec "$0" "$@"' <原 argv…>`。
+     *
+     * **为什么不能从 `Process` 手里拿 pid**：`android.jar`（API 35）里的
+     * `java.lang.Process` 根本没有 `pid()` 方法，直接调用是编译错误——CI 卡的就是这一行；
+     * 反射取私有字段在 API 28+ 的 hidden API 限制下同样拿不到。Harness 侧早就绕开了它
+     * （`RuntimeSupervisor.harnessLaunchArgv`）：`$$` 是 shell 自己的 pid，随后 `exec`
+     * 原地替换成 runner/proot **不换进程**，所以落盘的正是最终那个 proot 的 pid。
+     *
+     * 与 Harness 同一套手法：两条启动路径不各解一遍同一个问题，pidfile 的语义也一致
+     * （应用在启动瞬间被杀，pid 也已经落盘，下次启动照常收尸）。
+     */
+    fun pidWritingLaunchArgv(original: List<String>): List<String> {
+        if (original.isEmpty()) return original
+        return listOf(
+            "/system/bin/sh",
+            "-c",
+            "echo \$\$ > \"\$DSH_PIDFILE\"; exec \"\$0\" \"\$@\"",
+            original.first(),
+        ) + original.drop(1)
     }
 
     fun readPidFile(file: File): Int? = try {
         HarnessResidual.parsePid(file.readText())
     } catch (_: Exception) {
         null
-    }
-
-    fun writePidFile(file: File, pid: Int) {
-        try {
-            file.parentFile?.mkdirs()
-            file.writeText(pid.toString())
-        } catch (_: Exception) {
-            // pidfile 写不下只影响下次回收，不阻断本次启动。
-        }
     }
 
     fun deletePidFile(file: File) {

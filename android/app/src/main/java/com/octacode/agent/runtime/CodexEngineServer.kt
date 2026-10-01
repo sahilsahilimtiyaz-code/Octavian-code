@@ -72,12 +72,6 @@ class CodexEngineServer(private val store: RuntimeStore) {
         for (argv in attempts) {
             try {
                 startAttempt(argv)
-                val started = process
-                if (started != null) {
-                    EngineResidual.ownPid(started)?.let { pid ->
-                        EngineResidual.writePidFile(store.codexEnginePidFile, pid)
-                    }
-                }
                 return state()
             } catch (error: Throwable) {
                 lastError = error
@@ -104,12 +98,17 @@ class CodexEngineServer(private val store: RuntimeStore) {
         val logFile = File(store.harnessPidFile.parentFile, "codex-app-server.log")
         logFile.parentFile?.mkdirs()
         val launched = try {
-            ProcessBuilder(spec.argv)
+            ProcessBuilder(EngineResidual.pidWritingLaunchArgv(spec.argv))
                 .directory(store.currentRoot)
                 .redirectError(ProcessBuilder.Redirect.appendTo(logFile))
                 .also { builder ->
                     builder.environment().clear()
                     builder.environment().putAll(spec.environment)
+                    // pidfile 由包装层的 shell 在 start() 当下写好（见 EngineResidual）。
+                    builder.environment().put(
+                        EngineResidual.PID_FILE_ENV,
+                        store.codexEnginePidFile.absolutePath,
+                    )
                 }
                 .start()
         } catch (error: Throwable) {
